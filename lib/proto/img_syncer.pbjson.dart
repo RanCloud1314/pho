@@ -187,6 +187,7 @@ const SetDriveSMBRequest$json = {
     {'1': 'password', '3': 3, '4': 1, '5': 9, '10': 'password'},
     {'1': 'share', '3': 4, '4': 1, '5': 9, '10': 'share'},
     {'1': 'root', '3': 5, '4': 1, '5': 9, '10': 'root'},
+    {'1': 'timeout_seconds', '3': 6, '4': 1, '5': 5, '10': 'timeoutSeconds'},
   ],
 };
 
@@ -194,7 +195,8 @@ const SetDriveSMBRequest$json = {
 final $typed_data.Uint8List setDriveSMBRequestDescriptor = $convert.base64Decode(
     'ChJTZXREcml2ZVNNQlJlcXVlc3QSEgoEYWRkchgBIAEoCVIEYWRkchIaCgh1c2VybmFtZRgCIA'
     'EoCVIIdXNlcm5hbWUSGgoIcGFzc3dvcmQYAyABKAlSCHBhc3N3b3JkEhQKBXNoYXJlGAQgASgJ'
-    'UgVzaGFyZRISCgRyb290GAUgASgJUgRyb290');
+    'UgVzaGFyZRISCgRyb290GAUgASgJUgRyb290EicKD3RpbWVvdXRfc2Vjb25kcxgGIAEoBVIOdG'
+    'ltZW91dFNlY29uZHM=');
 
 @$core.Deprecated('Use setDriveSMBResponseDescriptor instead')
 const SetDriveSMBResponse$json = {
@@ -300,6 +302,7 @@ const SetDriveWebdavRequest$json = {
     {'1': 'password', '3': 3, '4': 1, '5': 9, '10': 'password'},
     {'1': 'root', '3': 4, '4': 1, '5': 9, '10': 'root'},
     {'1': 'insecure', '3': 5, '4': 1, '5': 8, '10': 'insecure'},
+    {'1': 'timeout_seconds', '3': 6, '4': 1, '5': 5, '10': 'timeoutSeconds'},
   ],
 };
 
@@ -307,7 +310,8 @@ const SetDriveWebdavRequest$json = {
 final $typed_data.Uint8List setDriveWebdavRequestDescriptor = $convert.base64Decode(
     'ChVTZXREcml2ZVdlYmRhdlJlcXVlc3QSEgoEYWRkchgBIAEoCVIEYWRkchIaCgh1c2VybmFtZR'
     'gCIAEoCVIIdXNlcm5hbWUSGgoIcGFzc3dvcmQYAyABKAlSCHBhc3N3b3JkEhIKBHJvb3QYBCAB'
-    'KAlSBHJvb3QSGgoIaW5zZWN1cmUYBSABKAhSCGluc2VjdXJl');
+    'KAlSBHJvb3QSGgoIaW5zZWN1cmUYBSABKAhSCGluc2VjdXJlEicKD3RpbWVvdXRfc2Vjb25kcx'
+    'gGIAEoBVIOdGltZW91dFNlY29uZHM=');
 
 @$core.Deprecated('Use setDriveWebdavResponseDescriptor instead')
 const SetDriveWebdavResponse$json = {
@@ -356,13 +360,14 @@ const SetDriveNFSRequest$json = {
   '2': [
     {'1': 'addr', '3': 1, '4': 1, '5': 9, '10': 'addr'},
     {'1': 'root', '3': 2, '4': 1, '5': 9, '10': 'root'},
+    {'1': 'timeout_seconds', '3': 3, '4': 1, '5': 5, '10': 'timeoutSeconds'},
   ],
 };
 
 /// Descriptor for `SetDriveNFSRequest`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List setDriveNFSRequestDescriptor = $convert.base64Decode(
     'ChJTZXREcml2ZU5GU1JlcXVlc3QSEgoEYWRkchgBIAEoCVIEYWRkchISCgRyb290GAIgASgJUg'
-    'Ryb290');
+    'Ryb290EicKD3RpbWVvdXRfc2Vjb25kcxgDIAEoBVIOdGltZW91dFNlY29uZHM=');
 
 @$core.Deprecated('Use setDriveNFSResponseDescriptor instead')
 const SetDriveNFSResponse$json = {

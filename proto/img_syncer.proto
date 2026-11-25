@@ -93,6 +93,7 @@ message SetDriveSMBRequest {
   string password = 3;
   string share = 4;
   string root = 5;
+  int32 timeout_seconds = 6;
 }
 message SetDriveSMBResponse {
   bool success = 1;
@@ -131,6 +132,7 @@ message SetDriveWebdavRequest {
   string password = 3;
   string root = 4;
   bool insecure = 5;
+  int32 timeout_seconds = 6;
 }
 message SetDriveWebdavResponse {
   bool success = 1;
@@ -149,6 +151,7 @@ message ListDriveWebdavDirResponse {
 message SetDriveNFSRequest {
   string addr = 1;
   string root = 2;
+  int32 timeout_seconds = 3;
 }
 message SetDriveNFSResponse {
   bool success = 1;

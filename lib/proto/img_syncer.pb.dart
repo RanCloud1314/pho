@@ -721,6 +721,7 @@ class SetDriveSMBRequest extends $pb.GeneratedMessage {
     $core.String? password,
     $core.String? share,
     $core.String? root,
+    $core.int? timeoutSeconds,
   }) {
     final $result = create();
     if (addr != null) {
@@ -738,6 +739,9 @@ class SetDriveSMBRequest extends $pb.GeneratedMessage {
     if (root != null) {
       $result.root = root;
     }
+    if (timeoutSeconds != null) {
+      $result.timeoutSeconds = timeoutSeconds;
+    }
     return $result;
   }
   SetDriveSMBRequest._() : super();
@@ -750,6 +754,7 @@ class SetDriveSMBRequest extends $pb.GeneratedMessage {
     ..aOS(3, _omitFieldNames ? '' : 'password')
     ..aOS(4, _omitFieldNames ? '' : 'share')
     ..aOS(5, _omitFieldNames ? '' : 'root')
+    ..a<$core.int>(6, _omitFieldNames ? '' : 'timeoutSeconds', $pb.PbFieldType.O3)
     ..hasRequiredFields = false
   ;
 
@@ -818,6 +823,15 @@ class SetDriveSMBRequest extends $pb.GeneratedMessage {
   $core.bool hasRoot() => $_has(4);
   @$pb.TagNumber(5)
   void clearRoot() => clearField(5);
+
+  @$pb.TagNumber(6)
+  $core.int get timeoutSeconds => $_getIZ(5);
+  @$pb.TagNumber(6)
+  set timeoutSeconds($core.int v) { $_setSignedInt32(5, v); }
+  @$pb.TagNumber(6)
+  $core.bool hasTimeoutSeconds() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearTimeoutSeconds() => clearField(6);
 }
 
 class SetDriveSMBResponse extends $pb.GeneratedMessage {
@@ -1259,6 +1273,7 @@ class SetDriveWebdavRequest extends $pb.GeneratedMessage {
     $core.String? password,
     $core.String? root,
     $core.bool? insecure,
+    $core.int? timeoutSeconds,
   }) {
     final $result = create();
     if (addr != null) {
@@ -1276,6 +1291,9 @@ class SetDriveWebdavRequest extends $pb.GeneratedMessage {
     if (insecure != null) {
       $result.insecure = insecure;
     }
+    if (timeoutSeconds != null) {
+      $result.timeoutSeconds = timeoutSeconds;
+    }
     return $result;
   }
   SetDriveWebdavRequest._() : super();
@@ -1288,6 +1306,7 @@ class SetDriveWebdavRequest extends $pb.GeneratedMessage {
     ..aOS(3, _omitFieldNames ? '' : 'password')
     ..aOS(4, _omitFieldNames ? '' : 'root')
     ..aOB(5, _omitFieldNames ? '' : 'insecure')
+    ..a<$core.int>(6, _omitFieldNames ? '' : 'timeoutSeconds', $pb.PbFieldType.O3)
     ..hasRequiredFields = false
   ;
 
@@ -1356,6 +1375,15 @@ class SetDriveWebdavRequest extends $pb.GeneratedMessage {
   $core.bool hasInsecure() => $_has(4);
   @$pb.TagNumber(5)
   void clearInsecure() => clearField(5);
+
+  @$pb.TagNumber(6)
+  $core.int get timeoutSeconds => $_getIZ(5);
+  @$pb.TagNumber(6)
+  set timeoutSeconds($core.int v) { $_setSignedInt32(5, v); }
+  @$pb.TagNumber(6)
+  $core.bool hasTimeoutSeconds() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearTimeoutSeconds() => clearField(6);
 }
 
 class SetDriveWebdavResponse extends $pb.GeneratedMessage {
@@ -1548,6 +1576,7 @@ class SetDriveNFSRequest extends $pb.GeneratedMessage {
   factory SetDriveNFSRequest({
     $core.String? addr,
     $core.String? root,
+    $core.int? timeoutSeconds,
   }) {
     final $result = create();
     if (addr != null) {
@@ -1555,6 +1584,9 @@ class SetDriveNFSRequest extends $pb.GeneratedMessage {
     }
     if (root != null) {
       $result.root = root;
+    }
+    if (timeoutSeconds != null) {
+      $result.timeoutSeconds = timeoutSeconds;
     }
     return $result;
   }
@@ -1565,6 +1597,7 @@ class SetDriveNFSRequest extends $pb.GeneratedMessage {
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(_omitMessageNames ? '' : 'SetDriveNFSRequest', package: const $pb.PackageName(_omitMessageNames ? '' : 'img_syncer'), createEmptyInstance: create)
     ..aOS(1, _omitFieldNames ? '' : 'addr')
     ..aOS(2, _omitFieldNames ? '' : 'root')
+    ..a<$core.int>(3, _omitFieldNames ? '' : 'timeoutSeconds', $pb.PbFieldType.O3)
     ..hasRequiredFields = false
   ;
 
@@ -1606,6 +1639,15 @@ class SetDriveNFSRequest extends $pb.GeneratedMessage {
   $core.bool hasRoot() => $_has(1);
   @$pb.TagNumber(2)
   void clearRoot() => clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.int get timeoutSeconds => $_getIZ(2);
+  @$pb.TagNumber(3)
+  set timeoutSeconds($core.int v) { $_setSignedInt32(2, v); }
+  @$pb.TagNumber(3)
+  $core.bool hasTimeoutSeconds() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearTimeoutSeconds() => clearField(3);
 }
 
 class SetDriveNFSResponse extends $pb.GeneratedMessage {
