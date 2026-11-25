@@ -1,4 +1,4 @@
-package com.fregie.pho
+package com.pho.next
 
 import androidx.annotation.NonNull
 import io.flutter.embedding.android.FlutterActivity
