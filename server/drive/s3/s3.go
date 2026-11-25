@@ -226,8 +226,11 @@ func (d *S3) offsetBody(rsp *http.Response, offset int64) (io.ReadCloser, int64,
 			return nil, 0, err
 		}
 	}
-	if length >= 0 {
-		return rsp.Body, length, nil
+	if length < 0 {
+		// 上游 http.go 会把 size 直接写进 Content-Length，-1 会毁掉响应
+		// shortcut: 无 Content-Length 的分块直链直接报错，等真遇到这类服务端再改成流式透传
+		rsp.Body.Close()
+		return nil, 0, fmt.Errorf("s3 download: response has no Content-Length")
 	}
 	return rsp.Body, length, nil
 }

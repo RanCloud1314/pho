@@ -240,6 +240,7 @@ func TestFollow302Download(t *testing.T) {
 
 func TestFollow302ForceHttps(t *testing.T) {
 	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(static.Pic1)))
 		w.Write(static.Pic1)
 	}))
 	defer plain.Close()
@@ -263,4 +264,24 @@ func TestFollow302ForceHttps(t *testing.T) {
 	b, _ := io.ReadAll(rc)
 	rc.Close()
 	require.Equal(t, static.Pic1, b)
+}
+
+// 直链既无 Content-Length 又走分块编码时必须报错：上游会把 size 直接写进 Content-Length
+func TestFollow302ChunkedDirectLink(t *testing.T) {
+	chunked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(static.Pic1) // >2KB 且未设置长度 -> chunked, ContentLength = -1
+	}))
+	defer chunked.Close()
+
+	openlist := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", chunked.URL+"/file")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer openlist.Close()
+
+	d, err := NewS3(openlist.URL, "us-east-1", "ak", "sk", "bucket", "", true, true, false)
+	require.NoError(t, err)
+	_, _, err = d.Download("a.jpg")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "Content-Length")
 }
