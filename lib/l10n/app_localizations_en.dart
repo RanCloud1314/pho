@@ -453,4 +453,103 @@ class AppLocalizationsEn extends AppLocalizations {
   String bgSyncSuccessNotificationBodyWithFailures(int succeeded, int failed) {
     return 'Successfully synced $succeeded photos ($failed failed)';
   }
+
+  @override
+  String get language => 'Language';
+
+  @override
+  String get followSystem => 'Follow system';
+
+  @override
+  String get settingsAdvanced => 'Advanced features';
+
+  @override
+  String get paralleUploadCount => 'Concurrent uploads';
+
+  @override
+  String get paralleUploadCountDesc =>
+      'The number of photos concurrently uploaded, can speed up syncing';
+
+  @override
+  String get encryptedStorage => 'Encrypted storage';
+
+  @override
+  String get encryptedStorageDesc =>
+      'Upload after encryption, prevent data from being scrutinized/leaked';
+
+  @override
+  String get enableEncrypt => 'Enable encrypted storage';
+
+  @override
+  String get encryptMethod => 'Encrypt method';
+
+  @override
+  String get encryptMethodDesc =>
+      'Encrypt your images with the AES algorithm to protect your privacy';
+
+  @override
+  String get legacyEncryptMethodDesc =>
+      'Legacy format, already encrypted files can still be decrypted';
+
+  @override
+  String get encryptPassword => 'Password';
+
+  @override
+  String get encryptPasswordEmpty => 'Password can\'t be empty';
+
+  @override
+  String get encryptWarning => 'Notes';
+
+  @override
+  String get encryptWarningContent01 =>
+      'Turning on encrypted storage will encrypt your photos before upload and decrypt them before download. Encrypted files will have the \'.aes\' suffix added.';
+
+  @override
+  String get encryptWarningContent02 =>
+      'You can view your encrypted photos in this app, on condition that you have set the correct password.';
+
+  @override
+  String get encryptWarningContent03 =>
+      'You can find your photos in cloud storage. You can also decrypt them without this app by using the same encrypt method and password.';
+
+  @override
+  String get encryptWarningContent04 =>
+      'Please write your password down and keep it safe, if you forget it, you can never decrypt your photos.';
+
+  @override
+  String get dirStructure => 'Directory structure';
+
+  @override
+  String get dirStructureDesc =>
+      'The directory structure of the cloud storage when uploading';
+
+  @override
+  String get syncFilter => 'Sync filter';
+
+  @override
+  String get syncFilterDesc => 'Filter out content you don\'t need';
+
+  @override
+  String get enableSyncFilter => 'Enable sync filter';
+
+  @override
+  String get syncFilterNoPhoto => 'Skip photos';
+
+  @override
+  String get syncFilterNoVideo => 'Skip videos';
+
+  @override
+  String get syncFilterDateAfter => 'Start date';
+
+  @override
+  String get syncFilterDateBefore => 'End date';
+
+  @override
+  String get syncFilterFileType => 'Only sync these file types';
+
+  @override
+  String get themeColor => 'Theme Color';
+
+  @override
+  String get themeColorDesc => 'Change to your preferred theme color';
 }

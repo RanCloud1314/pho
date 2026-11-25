@@ -41,6 +41,28 @@ class SettingModel extends ChangeNotifier {
   EncryptionType encryptionType = EncryptionType.none;
   String encryptionPassword = "";
 
+  /// 并行上传数上限
+  static const int maxParallelUploadCount = 10;
+
+  /// 同步照片时同时上传的数量
+  int paralleUploadCount = 1;
+
+  /// 云端目录结构：01 = YYYY/MM/DD，02 = YYYYMMDD
+  DirectoryType dirType = DirectoryType.DIRECTORY_TYPE_01;
+
+  /// 同步过滤：关闭时全部同步
+  bool enableFilter = false;
+  bool filterNoImage = false;
+  bool filterNoVideo = false;
+  DateTime? filterDateAfter;
+  DateTime? filterDateBefore;
+
+  /// 扩展名 -> 是否同步；未列出的类型视为同步
+  Map<String, bool> filterTypeMap = {};
+
+  /// 界面语言；null 表示跟随系统
+  Locale? appLocale;
+
   int galleryColumCount = 4;
 
   bool setGalleryColumCount(int count) {
@@ -79,6 +101,65 @@ class SettingModel extends ChangeNotifier {
   void setEncryptionPassword(String password) {
     if (encryptionPassword == password) return;
     encryptionPassword = password;
+    notifyListeners();
+  }
+
+  void setParallelUploadCount(int count) {
+    final value = count.clamp(1, maxParallelUploadCount);
+    if (paralleUploadCount == value) return;
+    paralleUploadCount = value;
+    notifyListeners();
+  }
+
+  void setDirType(DirectoryType type) {
+    if (dirType == type) return;
+    dirType = type;
+    notifyListeners();
+  }
+
+  void setFilterSwitch(bool enable) {
+    if (enableFilter == enable) return;
+    enableFilter = enable;
+    notifyListeners();
+  }
+
+  void setFilterNoImage(bool noImage) {
+    if (filterNoImage == noImage) return;
+    filterNoImage = noImage;
+    notifyListeners();
+  }
+
+  void setFilterNoVideo(bool noVideo) {
+    if (filterNoVideo == noVideo) return;
+    filterNoVideo = noVideo;
+    notifyListeners();
+  }
+
+  void setFilterAfter(DateTime? time) {
+    if (filterDateAfter == time) return;
+    filterDateAfter = time;
+    notifyListeners();
+  }
+
+  void setFilterBefore(DateTime? time) {
+    if (filterDateBefore == time) return;
+    filterDateBefore = time;
+    notifyListeners();
+  }
+
+  void setFilterType(String extensionStr, bool sync) {
+    filterTypeMap[extensionStr] = sync;
+    notifyListeners();
+  }
+
+  void setFilterTypeMap(Map<String, bool> map) {
+    filterTypeMap = Map<String, bool>.from(map);
+    notifyListeners();
+  }
+
+  void setAppLocale(Locale? locale) {
+    if (appLocale == locale) return;
+    appLocale = locale;
     notifyListeners();
   }
 }

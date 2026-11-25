@@ -86,6 +86,7 @@ void backgroundSyncEntrypoint() async {
   if (encPassword != null) {
     settingModel.setEncryptionPassword(encPassword);
   }
+  await loadAdvancedPrefs();
 
   // Step 6: 初始化 drive（依赖 Step 4 设置的 storage）
   await initDrive();
@@ -140,7 +141,7 @@ void backgroundSyncEntrypoint() async {
     storage: storageClient,
     assets: assetModel.localAssets,
     uploadedIds: uploadedIds,
-    parallelCount: 1,
+    parallelCount: settingModel.paralleUploadCount,
     shouldStop: () => cancelFlag,
     refreshUnSync: true,
   );

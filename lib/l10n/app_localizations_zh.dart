@@ -440,4 +440,96 @@ class AppLocalizationsZh extends AppLocalizations {
   String bgSyncSuccessNotificationBodyWithFailures(int succeeded, int failed) {
     return '成功同步 $succeeded 张照片（$failed 张失败）';
   }
+
+  @override
+  String get language => '语言';
+
+  @override
+  String get followSystem => '跟随系统';
+
+  @override
+  String get settingsAdvanced => '高级功能';
+
+  @override
+  String get paralleUploadCount => '并行上传数';
+
+  @override
+  String get paralleUploadCountDesc => '同步照片时并行上传的数量,可以加快同步速度';
+
+  @override
+  String get encryptedStorage => '加密储存';
+
+  @override
+  String get encryptedStorageDesc => '加密后再上传,避免数据被审查/泄漏';
+
+  @override
+  String get enableEncrypt => '启用加密储存';
+
+  @override
+  String get encryptMethod => '加密方式';
+
+  @override
+  String get encryptMethodDesc => '使用AES算法加密你的照片以保护你的隐私';
+
+  @override
+  String get legacyEncryptMethodDesc => '兼容旧版本,已加密的文件仍可正常解密';
+
+  @override
+  String get encryptPassword => '密码';
+
+  @override
+  String get encryptPasswordEmpty => '密码不能为空';
+
+  @override
+  String get encryptWarning => '注意事项';
+
+  @override
+  String get encryptWarningContent01 =>
+      '打开加密储存会在上传前加密你的照片，并在下载前解密，加密后的文件会增加\".aes\"后缀';
+
+  @override
+  String get encryptWarningContent02 => '你可以在这个app内浏览你加密后的照片,前提是配置了正确的密码';
+
+  @override
+  String get encryptWarningContent03 =>
+      '你可以在你的网络储存中找到你加密后的照片，你也可以使用正确的解密方式和密码来解密你的照片';
+
+  @override
+  String get encryptWarningContent04 => '请认真记下你的加密密码，如果你忘记了密码,你将无法解密你的照片';
+
+  @override
+  String get dirStructure => '云端目录结构';
+
+  @override
+  String get dirStructureDesc => '选择你上传照片时的云端目录结构';
+
+  @override
+  String get syncFilter => '同步过滤';
+
+  @override
+  String get syncFilterDesc => '过滤掉不需要同步的内容';
+
+  @override
+  String get enableSyncFilter => '启用同步过滤';
+
+  @override
+  String get syncFilterNoPhoto => '跳过图片';
+
+  @override
+  String get syncFilterNoVideo => '跳过视频';
+
+  @override
+  String get syncFilterDateAfter => '起始日期';
+
+  @override
+  String get syncFilterDateBefore => '结束日期';
+
+  @override
+  String get syncFilterFileType => '同步以下文件类型';
+
+  @override
+  String get themeColor => '主题颜色';
+
+  @override
+  String get themeColorDesc => '修改为你喜欢的主题颜色';
 }

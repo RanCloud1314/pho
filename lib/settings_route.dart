@@ -2,15 +2,23 @@ import 'dart:io';
 
 import 'package:extended_image/extended_image.dart';
 import 'package:flutter/material.dart';
+import 'package:img_syncer/advance/dir_route.dart';
+import 'package:img_syncer/advance/encrypt_route.dart';
+import 'package:img_syncer/advance/filter_route.dart';
+import 'package:img_syncer/advance/release.dart';
+import 'package:img_syncer/advance/theme_color.dart';
 import 'package:img_syncer/background_sync_route.dart';
 import 'package:img_syncer/choose_album_route.dart';
 import 'package:img_syncer/design_tokens.dart';
-import 'package:img_syncer/setting_storage_route.dart';
 import 'package:img_syncer/global.dart';
+import 'package:img_syncer/language_route.dart';
+import 'package:img_syncer/setting_storage_route.dart';
+import 'package:img_syncer/state_model.dart';
 import 'package:photo_manager/photo_manager.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-/// 简化版设置页：选择相册、云存储、后台同步、清除缓存、关于。
-/// 开源版本，无 Pro 功能门控、无购买入口。
+/// 设置页：相册/云存储/后台同步 + 高级功能（并行上传、加密储存、
+/// 目录结构、同步过滤、主题颜色）+ 实用工具（释放空间、清缓存、关于）。
 class SettingsRoute extends StatefulWidget {
   const SettingsRoute({Key? key}) : super(key: key);
 
@@ -61,7 +69,72 @@ class SettingsRouteState extends State<SettingsRoute> {
                 ),
               ),
             ),
-          const Divider(),
+          tile(
+            Icons.language,
+            l10n.language,
+            null,
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const LanguageRoute()),
+            ),
+          ),
+          sectionHeader(l10n.settingsAdvanced),
+          tile(
+            Icons.upload,
+            l10n.paralleUploadCount,
+            l10n.paralleUploadCountDesc,
+            trailing: Text(
+              '${settingModel.paralleUploadCount}',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            onTap: () => showParallelUploadDialog(),
+          ),
+          tile(
+            Icons.lock_outline,
+            l10n.encryptedStorage,
+            l10n.encryptedStorageDesc,
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const EncryptRoute()),
+            ),
+          ),
+          tile(
+            Icons.photo_library_outlined,
+            l10n.dirStructure,
+            l10n.dirStructureDesc,
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const DirRoute()),
+            ),
+          ),
+          tile(
+            Icons.filter_alt_outlined,
+            l10n.syncFilter,
+            l10n.syncFilterDesc,
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const FilterRoute()),
+            ),
+          ),
+          tile(
+            Icons.palette_outlined,
+            l10n.themeColor,
+            l10n.themeColorDesc,
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const ThemeColorRoute()),
+            ),
+          ),
+          sectionHeader(l10n.settingsUtilities),
+          tile(
+            Icons.delete_outline,
+            l10n.releaseStorage,
+            l10n.deleteSynced,
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const ReleaseRoute()),
+            ),
+          ),
           tile(
             Icons.cleaning_services,
             l10n.clearCache,
@@ -84,8 +157,36 @@ class SettingsRouteState extends State<SettingsRoute> {
     );
   }
 
+  Widget sectionHeader(String title) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(
+          AppSpacing.paddingSmall, AppSpacing.md, AppSpacing.paddingSmall, 0),
+      child: Row(
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(
+              color: colorScheme.primary,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: AppSpacing.sm),
+          Text(
+            title,
+            style: Theme.of(context)
+                .textTheme
+                .titleSmall
+                ?.copyWith(color: colorScheme.primary),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget tile(IconData icon, String title, String? subtitle,
-      {Function()? onTap}) {
+      {Function()? onTap, Widget? trailing}) {
     final ColorScheme colorScheme = Theme.of(context).colorScheme;
     final TextTheme textTheme = Theme.of(context).textTheme;
     return Container(
@@ -103,9 +204,67 @@ class SettingsRouteState extends State<SettingsRoute> {
                   color: colorScheme.onSurfaceVariant,
                 ))
             : null,
+        trailing: trailing,
         onTap: onTap,
       ),
     );
+  }
+
+  Future<void> showParallelUploadDialog() async {
+    int value = settingModel.paralleUploadCount;
+    final selected = await showDialog<int>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(l10n.paralleUploadCount),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(l10n.paralleUploadCountDesc),
+              const SizedBox(height: AppSpacing.sm),
+              Row(
+                children: [
+                  Expanded(
+                    child: Slider(
+                      value: value.toDouble(),
+                      min: 1,
+                      max: SettingModel.maxParallelUploadCount.toDouble(),
+                      divisions: SettingModel.maxParallelUploadCount - 1,
+                      label: '$value',
+                      onChanged: (v) {
+                        setDialogState(() {
+                          value = v.round();
+                        });
+                      },
+                    ),
+                  ),
+                  Text('$value',
+                      style: Theme.of(context).textTheme.titleMedium),
+                ],
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: Text(l10n.cancel),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(value),
+              child: Text(l10n.yes),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (selected == null) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('parallel_upload_count', selected);
+    settingModel.setParallelUploadCount(selected);
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   void showClearCacheDialog(BuildContext context) {

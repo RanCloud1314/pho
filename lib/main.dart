@@ -103,21 +103,26 @@ class MyApp extends StatelessWidget {
       builder: (lightDynamic, darkDynamic) {
         late ColorScheme lightColorScheme;
         late ColorScheme darkColorScheme;
-        if (lightDynamic != null) {
-          lightColorScheme = lightDynamic.harmonized();
-        } else {
-          print("lightDynamic is null");
+        // 用户显式选择过主题颜色时以种子色为准，否则跟随系统取色。
+        if (seedColor != null) {
           lightColorScheme = ColorScheme.fromSeed(
-            seedColor: seedColor ?? seedThemeColors[0],
+            seedColor: seedColor!,
             brightness: Brightness.light,
           );
-        }
-        if (darkDynamic != null) {
-          darkColorScheme = darkDynamic.harmonized();
-        } else {
-          print("darkDynamic is null");
           darkColorScheme = ColorScheme.fromSeed(
-            seedColor: seedColor ?? seedThemeColors[0],
+            seedColor: seedColor!,
+            brightness: Brightness.dark,
+          );
+        } else if (lightDynamic != null) {
+          lightColorScheme = lightDynamic.harmonized();
+          darkColorScheme = darkDynamic?.harmonized() ?? lightColorScheme;
+        } else {
+          lightColorScheme = ColorScheme.fromSeed(
+            seedColor: seedThemeColors[0],
+            brightness: Brightness.light,
+          );
+          darkColorScheme = ColorScheme.fromSeed(
+            seedColor: seedThemeColors[0],
             brightness: Brightness.dark,
           );
         }
@@ -142,6 +147,8 @@ class MyApp extends StatelessWidget {
                 theme: theme,
                 darkTheme: darkTheme,
                 themeMode: ThemeMode.light,
+                // 语言设置页选择后立即生效；null 表示跟随系统
+                locale: context.watch<SettingModel>().appLocale,
                 localizationsDelegates: AppLocalizations.localizationsDelegates,
                 supportedLocales: AppLocalizations.supportedLocales,
               );
@@ -179,15 +186,9 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
       final seedColorValue = prefs.getInt("seed_color");
       if (seedColorValue != null) {
         seedColor = Color(seedColorValue);
-        AdaptiveTheme.of(context).setTheme(
-          light: buildThemeData(
-            colorScheme: ColorScheme.fromSeed(
-              seedColor: seedColor!,
-              brightness: Brightness.light,
-            ),
-            brightness: Brightness.light,
-          ),
-        );
+        if (mounted) {
+          await applySeedColor(context, seedColor!);
+        }
       }
     });
     if (!isDesktop()) {
@@ -302,41 +303,3 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
   }
 }
 
-ThemeData buildThemeData({
-  required ColorScheme colorScheme,
-  required Brightness brightness,
-}) {
-  return ThemeData(
-    colorScheme: colorScheme,
-    useMaterial3: true,
-    textTheme: textTheme,
-    navigationBarTheme: brightness == Brightness.light
-        ? buildNavigationBarThemeLight(colorScheme)
-        : buildNavigationBarThemeDark(colorScheme),
-    iconTheme: brightness == Brightness.light ? iconThemeLight : iconThemeDark,
-    floatingActionButtonTheme: brightness == Brightness.light
-        ? floatingActionButtonThemeLight
-        : const FloatingActionButtonThemeData(),
-    appBarTheme: buildAppBarTheme(colorScheme),
-    cardTheme: buildCardTheme(colorScheme),
-    listTileTheme: buildListTileTheme(colorScheme),
-    chipTheme: buildChipTheme(colorScheme),
-    dialogTheme: buildDialogTheme(colorScheme),
-    snackBarTheme: buildSnackBarTheme(colorScheme),
-    dividerTheme: buildDividerTheme(colorScheme),
-    switchTheme: buildSwitchTheme(colorScheme),
-    inputDecorationTheme: buildInputDecorationTheme(colorScheme),
-    navigationRailTheme: buildNavigationRailTheme(colorScheme),
-    bottomSheetTheme: buildBottomSheetTheme(colorScheme),
-    progressIndicatorTheme: buildProgressIndicatorTheme(colorScheme),
-    sliderTheme: buildSliderTheme(colorScheme),
-    filledButtonTheme: buildFilledButtonTheme(colorScheme),
-    textButtonTheme: buildTextButtonTheme(colorScheme),
-    outlinedButtonTheme: buildOutlinedButtonTheme(colorScheme),
-    segmentedButtonTheme: buildSegmentedButtonTheme(colorScheme),
-    dropdownMenuTheme: buildDropdownMenuTheme(colorScheme),
-    popupMenuTheme: buildPopupMenuTheme(colorScheme),
-    tooltipTheme: buildTooltipTheme(colorScheme),
-    badgeTheme: buildBadgeTheme(colorScheme),
-  );
-}

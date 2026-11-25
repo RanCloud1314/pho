@@ -937,6 +937,186 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Successfully synced {succeeded} photos ({failed} failed)'**
   String bgSyncSuccessNotificationBodyWithFailures(int succeeded, int failed);
+
+  /// No description provided for @language.
+  ///
+  /// In en, this message translates to:
+  /// **'Language'**
+  String get language;
+
+  /// No description provided for @followSystem.
+  ///
+  /// In en, this message translates to:
+  /// **'Follow system'**
+  String get followSystem;
+
+  /// No description provided for @settingsAdvanced.
+  ///
+  /// In en, this message translates to:
+  /// **'Advanced features'**
+  String get settingsAdvanced;
+
+  /// No description provided for @paralleUploadCount.
+  ///
+  /// In en, this message translates to:
+  /// **'Concurrent uploads'**
+  String get paralleUploadCount;
+
+  /// No description provided for @paralleUploadCountDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'The number of photos concurrently uploaded, can speed up syncing'**
+  String get paralleUploadCountDesc;
+
+  /// No description provided for @encryptedStorage.
+  ///
+  /// In en, this message translates to:
+  /// **'Encrypted storage'**
+  String get encryptedStorage;
+
+  /// No description provided for @encryptedStorageDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Upload after encryption, prevent data from being scrutinized/leaked'**
+  String get encryptedStorageDesc;
+
+  /// No description provided for @enableEncrypt.
+  ///
+  /// In en, this message translates to:
+  /// **'Enable encrypted storage'**
+  String get enableEncrypt;
+
+  /// No description provided for @encryptMethod.
+  ///
+  /// In en, this message translates to:
+  /// **'Encrypt method'**
+  String get encryptMethod;
+
+  /// No description provided for @encryptMethodDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Encrypt your images with the AES algorithm to protect your privacy'**
+  String get encryptMethodDesc;
+
+  /// No description provided for @legacyEncryptMethodDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Legacy format, already encrypted files can still be decrypted'**
+  String get legacyEncryptMethodDesc;
+
+  /// No description provided for @encryptPassword.
+  ///
+  /// In en, this message translates to:
+  /// **'Password'**
+  String get encryptPassword;
+
+  /// No description provided for @encryptPasswordEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'Password can\'t be empty'**
+  String get encryptPasswordEmpty;
+
+  /// No description provided for @encryptWarning.
+  ///
+  /// In en, this message translates to:
+  /// **'Notes'**
+  String get encryptWarning;
+
+  /// No description provided for @encryptWarningContent01.
+  ///
+  /// In en, this message translates to:
+  /// **'Turning on encrypted storage will encrypt your photos before upload and decrypt them before download. Encrypted files will have the \'.aes\' suffix added.'**
+  String get encryptWarningContent01;
+
+  /// No description provided for @encryptWarningContent02.
+  ///
+  /// In en, this message translates to:
+  /// **'You can view your encrypted photos in this app, on condition that you have set the correct password.'**
+  String get encryptWarningContent02;
+
+  /// No description provided for @encryptWarningContent03.
+  ///
+  /// In en, this message translates to:
+  /// **'You can find your photos in cloud storage. You can also decrypt them without this app by using the same encrypt method and password.'**
+  String get encryptWarningContent03;
+
+  /// No description provided for @encryptWarningContent04.
+  ///
+  /// In en, this message translates to:
+  /// **'Please write your password down and keep it safe, if you forget it, you can never decrypt your photos.'**
+  String get encryptWarningContent04;
+
+  /// No description provided for @dirStructure.
+  ///
+  /// In en, this message translates to:
+  /// **'Directory structure'**
+  String get dirStructure;
+
+  /// No description provided for @dirStructureDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'The directory structure of the cloud storage when uploading'**
+  String get dirStructureDesc;
+
+  /// No description provided for @syncFilter.
+  ///
+  /// In en, this message translates to:
+  /// **'Sync filter'**
+  String get syncFilter;
+
+  /// No description provided for @syncFilterDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Filter out content you don\'t need'**
+  String get syncFilterDesc;
+
+  /// No description provided for @enableSyncFilter.
+  ///
+  /// In en, this message translates to:
+  /// **'Enable sync filter'**
+  String get enableSyncFilter;
+
+  /// No description provided for @syncFilterNoPhoto.
+  ///
+  /// In en, this message translates to:
+  /// **'Skip photos'**
+  String get syncFilterNoPhoto;
+
+  /// No description provided for @syncFilterNoVideo.
+  ///
+  /// In en, this message translates to:
+  /// **'Skip videos'**
+  String get syncFilterNoVideo;
+
+  /// No description provided for @syncFilterDateAfter.
+  ///
+  /// In en, this message translates to:
+  /// **'Start date'**
+  String get syncFilterDateAfter;
+
+  /// No description provided for @syncFilterDateBefore.
+  ///
+  /// In en, this message translates to:
+  /// **'End date'**
+  String get syncFilterDateBefore;
+
+  /// No description provided for @syncFilterFileType.
+  ///
+  /// In en, this message translates to:
+  /// **'Only sync these file types'**
+  String get syncFilterFileType;
+
+  /// No description provided for @themeColor.
+  ///
+  /// In en, this message translates to:
+  /// **'Theme Color'**
+  String get themeColor;
+
+  /// No description provided for @themeColorDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Change to your preferred theme color'**
+  String get themeColorDesc;
 }
 
 class _AppLocalizationsDelegate

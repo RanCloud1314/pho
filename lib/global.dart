@@ -1,16 +1,18 @@
-import 'package:img_syncer/setting_storage_route.dart';
-import 'package:img_syncer/proto/img_syncer.pbgrpc.dart';
-import 'package:img_syncer/run_server.dart';
-import 'package:img_syncer/sync_timer.dart';
-import 'package:img_syncer/state_model.dart';
-import 'package:img_syncer/storage/storage.dart';
-import 'package:img_syncer/util.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:img_syncer/logger/logger.dart';
-import 'package:photo_manager/photo_manager.dart';
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:img_syncer/l10n/app_localizations.dart';
-import 'dart:async';
+import 'package:img_syncer/logger/logger.dart';
+import 'package:img_syncer/proto/img_syncer.pbgrpc.dart';
+import 'package:img_syncer/run_server.dart';
+import 'package:img_syncer/state_model.dart';
+import 'package:img_syncer/storage/storage.dart';
+import 'package:img_syncer/sync_timer.dart';
+import 'package:img_syncer/setting_storage_route.dart';
+import 'package:img_syncer/util.dart';
+import 'package:photo_manager/photo_manager.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io';
 
 import 'event_bus.dart';
@@ -74,6 +76,7 @@ class Global {
         if (encPassword != null) {
           settingModel.setEncryptionPassword(encPassword);
         }
+        await loadAdvancedPrefs();
         await initDrive();
         return;
       }
@@ -97,6 +100,7 @@ class Global {
       if (encPassword != null) {
         settingModel.setEncryptionPassword(encPassword);
       }
+      await loadAdvancedPrefs();
       final seedColorValue = prefs.getInt("seed_color");
       if (seedColorValue != null) {
         seedColor = Color(seedColorValue);
@@ -252,6 +256,61 @@ Future<void> initDrive() async {
       }
       break;
   }
+  await applyDirectoryType();
+}
+
+/// 把设置里的云端目录结构下发给内置 Go server。
+/// server 重启（进程被杀/手机重启）后需要重新下发。
+Future<void> applyDirectoryType() async {
+  try {
+    final rsp = await storageClient.cli.setDirectoryType(
+      SetDirectoryTypeRequest(directoryType: settingModel.dirType),
+    );
+    if (!rsp.success) {
+      logger.addLog("set directory type failed: ${rsp.message}");
+    }
+  } catch (e) {
+    logger.addLog("set directory type failed: $e");
+  }
+}
+
+DateTime? _dateFromPrefs(int? millis) =>
+    millis == null ? null : DateTime.fromMillisecondsSinceEpoch(millis);
+
+/// 读取高级功能相关的 prefs 到 settingModel：
+/// 并行上传数、云端目录结构、同步过滤、界面语言。
+/// UI 进程与 iOS 后台 headless 进程共用。
+Future<void> loadAdvancedPrefs() async {
+  final prefs = await SharedPreferences.getInstance();
+  final parallel = prefs.getInt('parallel_upload_count');
+  if (parallel != null) {
+    settingModel.setParallelUploadCount(parallel);
+  }
+  final dirType = prefs.getInt('directory_type');
+  if (dirType != null &&
+      dirType >= 0 &&
+      dirType < DirectoryType.values.length) {
+    settingModel.setDirType(DirectoryType.values[dirType]);
+  }
+  settingModel.setFilterSwitch(prefs.getBool('enable_filter') ?? false);
+  settingModel.setFilterNoImage(prefs.getBool('filter_no_image') ?? false);
+  settingModel.setFilterNoVideo(prefs.getBool('filter_no_video') ?? false);
+  settingModel.setFilterAfter(_dateFromPrefs(prefs.getInt('filter_date_after')));
+  settingModel
+      .setFilterBefore(_dateFromPrefs(prefs.getInt('filter_date_before')));
+  final typeMapJson = prefs.getString('filter_type_map');
+  if (typeMapJson != null) {
+    try {
+      final decoded = jsonDecode(typeMapJson) as Map<String, dynamic>;
+      settingModel.setFilterTypeMap(
+          decoded.map((key, value) => MapEntry(key, value == true)));
+    } catch (e) {
+      logger.addLog("load filter_type_map failed: $e");
+    }
+  }
+  final localeCode = prefs.getString('app_locale');
+  settingModel.setAppLocale(
+      (localeCode == null || localeCode.isEmpty) ? null : Locale(localeCode));
 }
 
 class SnackBarManager {

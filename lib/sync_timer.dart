@@ -65,7 +65,7 @@ Future<void> reloadAutoSyncTimer() async {
       storage: storageClient,
       assets: all,
       uploadedIds: uploadedIds,
-      parallelCount: 1,
+      parallelCount: settingModel.paralleUploadCount,
       shouldStop: () => stateModel.needStopSync,
       refreshUnSync: true,
     );

@@ -1,3 +1,4 @@
+import 'package:adaptive_theme/adaptive_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:img_syncer/design_tokens.dart';
 
@@ -395,5 +396,66 @@ BadgeThemeData buildBadgeTheme(ColorScheme cs) {
   return BadgeThemeData(
     backgroundColor: cs.error,
     textColor: cs.onError,
+  );
+}
+
+/// 由 ColorScheme 构建完整 ThemeData。
+ThemeData buildThemeData({
+  required ColorScheme colorScheme,
+  required Brightness brightness,
+}) {
+  return ThemeData(
+    colorScheme: colorScheme,
+    useMaterial3: true,
+    textTheme: textTheme,
+    navigationBarTheme: brightness == Brightness.light
+        ? buildNavigationBarThemeLight(colorScheme)
+        : buildNavigationBarThemeDark(colorScheme),
+    iconTheme: brightness == Brightness.light ? iconThemeLight : iconThemeDark,
+    floatingActionButtonTheme: brightness == Brightness.light
+        ? floatingActionButtonThemeLight
+        : const FloatingActionButtonThemeData(),
+    appBarTheme: buildAppBarTheme(colorScheme),
+    cardTheme: buildCardTheme(colorScheme),
+    listTileTheme: buildListTileTheme(colorScheme),
+    chipTheme: buildChipTheme(colorScheme),
+    dialogTheme: buildDialogTheme(colorScheme),
+    snackBarTheme: buildSnackBarTheme(colorScheme),
+    dividerTheme: buildDividerTheme(colorScheme),
+    switchTheme: buildSwitchTheme(colorScheme),
+    inputDecorationTheme: buildInputDecorationTheme(colorScheme),
+    navigationRailTheme: buildNavigationRailTheme(colorScheme),
+    bottomSheetTheme: buildBottomSheetTheme(colorScheme),
+    progressIndicatorTheme: buildProgressIndicatorTheme(colorScheme),
+    sliderTheme: buildSliderTheme(colorScheme),
+    filledButtonTheme: buildFilledButtonTheme(colorScheme),
+    textButtonTheme: buildTextButtonTheme(colorScheme),
+    outlinedButtonTheme: buildOutlinedButtonTheme(colorScheme),
+    segmentedButtonTheme: buildSegmentedButtonTheme(colorScheme),
+    dropdownMenuTheme: buildDropdownMenuTheme(colorScheme),
+    popupMenuTheme: buildPopupMenuTheme(colorScheme),
+    tooltipTheme: buildTooltipTheme(colorScheme),
+    badgeTheme: buildBadgeTheme(colorScheme),
+  );
+}
+
+/// 应用种子色（主题颜色设置页使用）：立即重建明暗两套主题。
+/// AdaptiveTheme 会通知 MaterialApp 重建，无需重启应用。
+Future<void> applySeedColor(BuildContext context, Color color) async {
+  AdaptiveTheme.of(context).setTheme(
+    light: buildThemeData(
+      colorScheme: ColorScheme.fromSeed(
+        seedColor: color,
+        brightness: Brightness.light,
+      ),
+      brightness: Brightness.light,
+    ),
+    dark: buildThemeData(
+      colorScheme: ColorScheme.fromSeed(
+        seedColor: color,
+        brightness: Brightness.dark,
+      ),
+      brightness: Brightness.dark,
+    ),
   );
 }

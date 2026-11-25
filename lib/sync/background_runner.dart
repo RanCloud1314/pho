@@ -40,13 +40,43 @@ class SyncCallbacks {
 
 /// 统一的同步判定：同步的三个位置（计数、上传、展示）必须使用相同逻辑。
 /// 提取为顶层函数以便测试与跨调用方复用（sync_body / sync_timer / background_runner）。
-/// 开源版仅检查是否已上传；Pro 版过滤逻辑已移除。
+/// 已上传的跳过；同步过滤开启时再按类型、日期区间、扩展名过滤。
 bool shouldSyncAsset(
     Asset asset, String id, Map<String, bool> uploadedIds, String extensionStr) {
   if (uploadedIds[id] == true) {
     return false;
   }
-  return true;
+  if (!settingModel.enableFilter) {
+    return true;
+  }
+  if (settingModel.filterNoVideo && asset.isVideo()) {
+    return false;
+  }
+  if (settingModel.filterNoImage && !asset.isVideo()) {
+    return false;
+  }
+  final date = asset.dateCreated();
+  final after = settingModel.filterDateAfter;
+  if (after != null && date.isBefore(after)) {
+    return false;
+  }
+  final before = settingModel.filterDateBefore;
+  if (before != null && date.isAfter(before)) {
+    return false;
+  }
+  return isExtensionSynced(settingModel.filterTypeMap, extensionStr);
+}
+
+/// 扩展名过滤：map 为「扩展名 -> 是否同步」，未列出的类型默认同步。
+/// 扩展名带不带前导点都能匹配。
+bool isExtensionSynced(Map<String, bool> map, String extensionStr) {
+  if (map.isEmpty) {
+    return true;
+  }
+  final lower = extensionStr.toLowerCase();
+  final bare = lower.startsWith('.') ? lower.substring(1) : lower;
+  final value = map[lower] ?? map[bare] ?? map['.$bare'];
+  return value ?? true;
 }
 
 /// 执行一次同步。纯逻辑，无 UI 副作用（无 setState / keepScreenOn / SnackBar / mounted 检查）。

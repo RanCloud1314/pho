@@ -239,7 +239,7 @@ class SyncBodyState extends State<SyncBody> {
       storage: storageClient,
       assets: all,
       uploadedIds: uploadedIds,
-      parallelCount: 1,
+      parallelCount: settingModel.paralleUploadCount,
       callbacks: SyncCallbacks(
         onProgress: (completed, total, failed) {
           if (mounted) {
