@@ -26,6 +26,8 @@ type Smb struct {
 	shareName         string
 	rootPath          string
 	fs                *smb2.Share
+	conn              net.Conn
+	timeout           time.Duration
 	lastConnTimestamp int64
 	downloadLock      sync.Mutex
 	connMu            sync.Mutex
@@ -42,6 +44,56 @@ func NewSmbDrive(addr, username, password string) *Smb {
 	}
 
 	return smb
+}
+
+// SetTimeoutSec 设置无进展超时秒数：传输中每次读写都会把 deadline 续到
+// now+timeout，只有真正无进展超过该时长才会中断。0 或负数表示不限制。
+func (s *Smb) SetTimeoutSec(sec int32) {
+	if sec < 0 {
+		sec = 0
+	}
+	s.timeout = time.Duration(sec) * time.Second
+}
+
+// deadlineReader 在每次 Read 前把 conn 的读写 deadline 续到 now+timeout。
+// shortcut: 并发上传共享同一 conn 时 deadline 相互续期，单个卡死流检测不到；
+// 需要精确按流超时时再升级为 per-stream 机制。
+type deadlineReader struct {
+	io.Reader
+	s *Smb
+}
+
+func (r *deadlineReader) Read(p []byte) (int, error) {
+	if r.s.timeout > 0 && r.s.conn != nil {
+		deadline := time.Now().Add(r.s.timeout)
+		r.s.conn.SetReadDeadline(deadline)
+		r.s.conn.SetWriteDeadline(deadline)
+	}
+	return r.Reader.Read(p)
+}
+
+func (r *deadlineReader) Close() error {
+	r.s.clearDeadline()
+	if c, ok := r.Reader.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
+}
+
+// clearDeadline 清除残留的读写 deadline，避免影响后续空闲期操作。
+func (s *Smb) clearDeadline() {
+	if s.conn != nil {
+		var zero time.Time
+		s.conn.SetDeadline(zero)
+	}
+}
+
+// wrapStallTimeout 给 r 加上无进展超时；未启用（timeout=0）时原样返回。
+func (s *Smb) wrapStallTimeout(r io.Reader) io.Reader {
+	if s.timeout <= 0 {
+		return r
+	}
+	return &deadlineReader{Reader: r, s: s}
 }
 
 func (s *Smb) lastConnTime() time.Time {
@@ -95,6 +147,7 @@ func (s *Smb) Dial() (*smb2.Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.conn = conn
 	d := &smb2.Dialer{
 		Initiator: &smb2.NTLMInitiator{
 			User:     s.username,
@@ -194,7 +247,8 @@ func (s *Smb) Upload(path string, content io.ReadCloser, size int64, lastModifie
 		return err
 	}
 
-	_, copyErr := io.Copy(f, content)
+	_, copyErr := io.Copy(f, s.wrapStallTimeout(content))
+	s.clearDeadline()
 	closeErr := f.Close()
 	if copyErr != nil {
 		// 删除残缺文件，防止 FilterNotUploaded 按名匹配将其标记为已上传（issue #83/#82）
@@ -291,6 +345,10 @@ func (s *Smb) DownloadWithOffset(path string, offset int64) (io.ReadCloser, int6
 	if err != nil {
 		s.cleanLastConnTime()
 		return nil, 0, err
+	}
+	// 包装无进展超时；Close 时会顺带清除 deadline
+	if s.timeout > 0 {
+		return &deadlineReader{Reader: f, s: s}, fi.Size(), nil
 	}
 	return f, fi.Size(), nil
 }

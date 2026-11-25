@@ -25,6 +25,7 @@ func (a *api) SetDriveSMB(ctx context.Context, req *pb.SetDriveSMBRequest) (rsp 
 		return
 	}
 	s := smb.NewSmbDrive(req.Addr, req.Username, req.Password)
+	s.SetTimeoutSec(req.TimeoutSeconds)
 	a.im.SetDrive(s)
 	if req.Share != "" {
 		e := s.SetShare(req.Share)
