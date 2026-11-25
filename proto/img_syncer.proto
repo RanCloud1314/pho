@@ -177,6 +177,8 @@ message SetDriveS3Request {
   string bucket = 5;
   bool path_style = 6;
   string root = 7;
+  bool follow_302 = 8;
+  bool force_302_https = 9;
 }
 
 message SetDriveS3Response {

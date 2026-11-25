@@ -50,11 +50,15 @@ SDK：aws-sdk-go-v2；目录语义：ListObjectsV2 delimiter + CommonPrefixes �
 | Bucket | string | 必填 |
 | PathStyle | bool | R2/OSS/COS/MinIO 通常需 true；AWS 官方可 false（virtual-host style） |
 | Root | string | 可选，空 = bucket 根；非空时所有 key 加 `root/` 前缀，用于共享 bucket 场景 |
+| Follow302 | bool | 默认 true；开启后下载走「预签名 URL → 302 Location → 直链」两步手动跟随（服务端如 OpenList 会返回 302 重定向直链）。对原始请求**不签 Range**，对直链**只带 Range、不带 Authorization**；每次续传重新取链接（直链有时效，不持久化） |
+| Force302Https | bool | 默认 false；开启后校验 302 Location 必须为 https，否则报错 |
 
 ### `server/drive/s3/s3.go`
 
 - `type S3 struct { cli *s3.Client, uploader *manager.Uploader, bucket, root string }`
 - 客户端构造：`config.LoadDefaultConfig` + `aws.String(ak/sk)` 静态凭证 + 自定义 `BaseEndpoint` + `UsePathStyle`；endpoint 为空时不设，走 AWS 默认。`root` 来自请求（可选，空 = bucket 根），key 拼接统一用 `path.Join`（勿用 `filepath.Join`，Windows 反斜杠会污染 S3 key）
+- 连通探测：用 ListObjectsV2（MaxKeys=1）而非 HeadBucket——OpenList/gofakes3 类服务端不支持 HEAD（坑 5）
+- 302 下载（Follow302 开启时）：`Download`/`DownloadWithOffset` 走 `s3.NewPresignClient` 预签名 GetObject（**不含 Range**），用普通 `http.Client`（`CheckRedirect: ErrUseLastResponse`）请求；200 → 直接返回流；302 → 取 `Location`（Force302Https 开启时校验 scheme 为 https）→ 对直链发 GET，**只带 `Range` 头**（有 offset 时），不带 Authorization/签名头；返回流与长度。Follow302 关闭时走 SDK GetObject 常规路径
 - `Upload(path, r, size, modtime)`：`manager.Uploader.Upload`（≥32MB 自动分片），读完后 `r.Close()`；modtime 无法设置到对象元数据之外，不额外写 metadata（保持与其他 drive 一致的最小行为）
 - `IsExist(path)`：HeadObject，404 → false
 - `Download(path)`：GetObject → (Body, ContentLength)
@@ -74,7 +78,7 @@ SDK：aws-sdk-go-v2；目录语义：ListObjectsV2 delimiter + CommonPrefixes �
 
 ### `lib/storageform/s3form.dart`
 
-表单字段同上表；`shared_preferences` 键：`s3_endpoint`, `s3_region`, `s3_access_key_id`, `s3_secret_access_key`, `s3_bucket`, `s3_path_style`, `s3_root`。pathStyle 用开关。提交调 gRPC `SetDriveS3`。在存储类型选择页注册新卡片（对齐 SMB/WebDAV/NFS 入口样式）。
+表单字段同上表；`shared_preferences` 键：`s3_endpoint`, `s3_region`, `s3_access_key_id`, `s3_secret_access_key`, `s3_bucket`, `s3_path_style`, `s3_root`, `s3_follow_302`, `s3_force_302_https`。pathStyle 用开关；「跟随302」开关（默认开）旁有小问号图标，点击弹提示：*部分服务端（如 openlist）会返回 302 重定向链接，开启此开关，将跟随 302 重定向*；开关开启时显示「强制验证302链接 https」checkbox（默认关）。提交调 gRPC `SetDriveS3`。在存储类型选择页注册新卡片（对齐 SMB/WebDAV/NFS 入口样式）。
 
 ### 测试
 
