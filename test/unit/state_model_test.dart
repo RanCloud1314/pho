@@ -144,4 +144,35 @@ void main() {
       expect(state.syncedIDs.toSet().length, 3);
     });
   });
+
+  group('上传进度', () {
+    late StateModel state;
+
+    setUp(() {
+      SharedPreferences.setMockInitialValues({});
+      state = StateModel();
+    });
+
+    test('进度封顶 99%，finishUpload 后归零', () {
+      state.updateUploadProgress('id1', 100, 100);
+      expect(state.getUploadPercent('id1'), closeTo(0.99, 0.0001));
+      state.finishUpload('id1', true);
+      expect(state.getUploadPercent('id1'), 0);
+      expect(state.uploadProgress.containsKey('id1'), isFalse);
+    });
+
+    test('更新进度时计算速率', () async {
+      state.updateUploadProgress('id1', 0, 1000);
+      // 等待一点时间让两次 update 之间有时间差
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      state.updateUploadProgress('id1', 500, 1000);
+      expect(state.uploadProgress['id1']!.rateBps, greaterThan(0));
+    });
+
+    test('同一时刻连续两次更新不产生 NaN 速率', () {
+      state.updateUploadProgress('id1', 100, 1000);
+      state.updateUploadProgress('id1', 200, 1000);
+      expect(state.uploadProgress['id1']!.rateBps, isNotNaN);
+    });
+  });
 }

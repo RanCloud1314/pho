@@ -167,6 +167,9 @@ class SettingModel extends ChangeNotifier {
 class transmitState {
   int transmitted = 0;
   int total = 0;
+  double rateBps = 0; // 上传速率（字节/秒），EMA 平滑
+  DateTime? lastUpdate;
+  int lastBytes = 0;
 }
 
 class StateModel extends ChangeNotifier {
@@ -210,8 +213,22 @@ class StateModel extends ChangeNotifier {
     if (!uploadProgress.containsKey(id)) {
       uploadProgress[id] = transmitState();
     }
-    uploadProgress[id]!.transmitted = transmitted;
-    uploadProgress[id]!.total = total;
+    final state = uploadProgress[id]!;
+    final now = DateTime.now();
+    if (state.lastUpdate != null) {
+      final dt = now.difference(state.lastUpdate!).inMicroseconds;
+      if (dt > 0) {
+        final instant = (transmitted - state.lastBytes) / (dt / 1e6);
+        // EMA 平滑，避免按 chunk 更新时速率跳动
+        state.rateBps = state.rateBps == 0
+            ? instant
+            : 0.3 * instant + 0.7 * state.rateBps;
+      }
+    }
+    state.transmitted = transmitted;
+    state.total = total;
+    state.lastUpdate = now;
+    state.lastBytes = transmitted;
     notifyListeners();
   }
 
@@ -243,7 +260,8 @@ class StateModel extends ChangeNotifier {
       return 0;
     }
     final state = uploadProgress[id]!;
-    return state.transmitted / state.total;
+    // 封顶 99%：本地已发送字节不代表服务端已确认，完成以 finishUpload 为准
+    return (state.transmitted / state.total).clamp(0.0, 0.99);
   }
 
   double getDownloadPercent(String id) {

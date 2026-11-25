@@ -18,6 +18,22 @@ import 'package:img_syncer/sync/background_runner.dart';
 export 'package:img_syncer/sync/background_runner.dart'
     show shouldSyncAsset;
 
+/// 字节数人性化显示：B/KB/MB/GB，1 位小数。
+String _fmtBytes(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  var v = bytes / 1024.0;
+  var i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return '${v.toStringAsFixed(1)} ${units[i]}';
+}
+
+/// 速率显示：B/s 或 KB/s 或 MB/s。
+String _fmtRate(double bps) => '${_fmtBytes(bps.round())}/s';
+
 class SyncBody extends StatefulWidget {
   const SyncBody({
     Key? key,
@@ -326,9 +342,36 @@ class SyncBodyState extends State<SyncBody> {
                 builder: (context, stateModel, child) {
                   final percent = stateModel.getUploadPercent(asset.local!.id);
                   if (percent > 0) {
+                    final st = stateModel.uploadProgress[asset.local!.id];
                     return Container(
                       padding: const EdgeInsets.fromLTRB(0, 0, 10, 0),
-                      child: LinearProgressIndicator(value: percent),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          LinearProgressIndicator(value: percent),
+                          if (st != null) ...[
+                            const SizedBox(height: AppSpacing.xs),
+                            Text(
+                              '${(percent * 100).toInt()}% '
+                              '${_fmtBytes(st.transmitted)}/${_fmtBytes(st.total)}'
+                              '${st.rateBps > 0 ? ' · ${_fmtRate(st.rateBps)}' : ''}',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .secondary,
+                                    fontFeatures: const [
+                                      FontFeature.tabularFigures()
+                                    ],
+                                  ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
+                        ],
+                      ),
                     );
                   }
                   if (!stateModel.syncedIDs.contains(asset.local!.id)) {
