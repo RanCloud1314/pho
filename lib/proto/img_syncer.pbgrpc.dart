@@ -69,6 +69,10 @@ class ImgSyncerClient extends $grpc.Client {
       '/img_syncer.ImgSyncer/ListDriveNFSDir',
       ($0.ListDriveNFSDirRequest value) => value.writeToBuffer(),
       ($core.List<$core.int> value) => $0.ListDriveNFSDirResponse.fromBuffer(value));
+  static final _$setDriveS3 = $grpc.ClientMethod<$0.SetDriveS3Request, $0.SetDriveS3Response>(
+      '/img_syncer.ImgSyncer/SetDriveS3',
+      ($0.SetDriveS3Request value) => value.writeToBuffer(),
+      ($core.List<$core.int> value) => $0.SetDriveS3Response.fromBuffer(value));
   static final _$ping = $grpc.ClientMethod<$0.PingRequest, $0.PingResponse>(
       '/img_syncer.ImgSyncer/Ping',
       ($0.PingRequest value) => value.writeToBuffer(),
@@ -126,6 +130,10 @@ class ImgSyncerClient extends $grpc.Client {
 
   $grpc.ResponseFuture<$0.ListDriveNFSDirResponse> listDriveNFSDir($0.ListDriveNFSDirRequest request, {$grpc.CallOptions? options}) {
     return $createUnaryCall(_$listDriveNFSDir, request, options: options);
+  }
+
+  $grpc.ResponseFuture<$0.SetDriveS3Response> setDriveS3($0.SetDriveS3Request request, {$grpc.CallOptions? options}) {
+    return $createUnaryCall(_$setDriveS3, request, options: options);
   }
 
   $grpc.ResponseFuture<$0.PingResponse> ping($0.PingRequest request, {$grpc.CallOptions? options}) {
@@ -222,6 +230,13 @@ abstract class ImgSyncerServiceBase extends $grpc.Service {
         false,
         ($core.List<$core.int> value) => $0.ListDriveNFSDirRequest.fromBuffer(value),
         ($0.ListDriveNFSDirResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.SetDriveS3Request, $0.SetDriveS3Response>(
+        'SetDriveS3',
+        setDriveS3_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) => $0.SetDriveS3Request.fromBuffer(value),
+        ($0.SetDriveS3Response value) => value.writeToBuffer()));
     $addMethod($grpc.ServiceMethod<$0.PingRequest, $0.PingResponse>(
         'Ping',
         ping_Pre,
@@ -275,6 +290,10 @@ abstract class ImgSyncerServiceBase extends $grpc.Service {
     return listDriveNFSDir(call, await request);
   }
 
+  $async.Future<$0.SetDriveS3Response> setDriveS3_Pre($grpc.ServiceCall call, $async.Future<$0.SetDriveS3Request> request) async {
+    return setDriveS3(call, await request);
+  }
+
   $async.Future<$0.PingResponse> ping_Pre($grpc.ServiceCall call, $async.Future<$0.PingRequest> request) async {
     return ping(call, await request);
   }
@@ -291,5 +310,6 @@ abstract class ImgSyncerServiceBase extends $grpc.Service {
   $async.Future<$0.ListDriveWebdavDirResponse> listDriveWebdavDir($grpc.ServiceCall call, $0.ListDriveWebdavDirRequest request);
   $async.Future<$0.SetDriveNFSResponse> setDriveNFS($grpc.ServiceCall call, $0.SetDriveNFSRequest request);
   $async.Future<$0.ListDriveNFSDirResponse> listDriveNFSDir($grpc.ServiceCall call, $0.ListDriveNFSDirRequest request);
+  $async.Future<$0.SetDriveS3Response> setDriveS3($grpc.ServiceCall call, $0.SetDriveS3Request request);
   $async.Future<$0.PingResponse> ping($grpc.ServiceCall call, $0.PingRequest request);
 }

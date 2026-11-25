@@ -22,12 +22,13 @@ SettingModel settingModel = SettingModel();
 AssetModel assetModel = AssetModel();
 StateModel stateModel = StateModel();
 
-enum Drive { smb, webDav, nfs }
+enum Drive { smb, webDav, nfs, s3 }
 
 Map<Drive, String> driveName = {
   Drive.smb: 'SMB',
   Drive.webDav: 'WebDAV',
   Drive.nfs: 'NFS',
+  Drive.s3: 'S3',
 };
 
 enum EncryptionType { none, aesCfb, aesGcm }

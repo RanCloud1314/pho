@@ -410,6 +410,45 @@ final $typed_data.Uint8List listDriveNFSDirResponseDescriptor = $convert.base64D
     'ChdMaXN0RHJpdmVORlNEaXJSZXNwb25zZRIYCgdzdWNjZXNzGAEgASgIUgdzdWNjZXNzEhgKB2'
     '1lc3NhZ2UYAiABKAlSB21lc3NhZ2USEgoEZGlycxgDIAMoCVIEZGlycw==');
 
+@$core.Deprecated('Use setDriveS3RequestDescriptor instead')
+const SetDriveS3Request$json = {
+  '1': 'SetDriveS3Request',
+  '2': [
+    {'1': 'endpoint', '3': 1, '4': 1, '5': 9, '10': 'endpoint'},
+    {'1': 'region', '3': 2, '4': 1, '5': 9, '10': 'region'},
+    {'1': 'access_key_id', '3': 3, '4': 1, '5': 9, '10': 'accessKeyId'},
+    {'1': 'secret_access_key', '3': 4, '4': 1, '5': 9, '10': 'secretAccessKey'},
+    {'1': 'bucket', '3': 5, '4': 1, '5': 9, '10': 'bucket'},
+    {'1': 'path_style', '3': 6, '4': 1, '5': 8, '10': 'pathStyle'},
+    {'1': 'root', '3': 7, '4': 1, '5': 9, '10': 'root'},
+    {'1': 'follow_302', '3': 8, '4': 1, '5': 8, '10': 'follow302'},
+    {'1': 'force_302_https', '3': 9, '4': 1, '5': 8, '10': 'force302Https'},
+  ],
+};
+
+/// Descriptor for `SetDriveS3Request`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List setDriveS3RequestDescriptor = $convert.base64Decode(
+    'ChFTZXREcml2ZVMzUmVxdWVzdBIaCghlbmRwb2ludBgBIAEoCVIIZW5kcG9pbnQSFgoGcmVnaW'
+    '9uGAIgASgJUgZyZWdpb24SIgoNYWNjZXNzX2tleV9pZBgDIAEoCVILYWNjZXNzS2V5SWQSKgoR'
+    'c2VjcmV0X2FjY2Vzc19rZXkYBCABKAlSD3NlY3JldEFjY2Vzc0tleRIWCgZidWNrZXQYBSABKA'
+    'lSBmJ1Y2tldBIdCgpwYXRoX3N0eWxlGAYgASgIUglwYXRoU3R5bGUSEgoEcm9vdBgHIAEoCVIE'
+    'cm9vdBIdCgpmb2xsb3dfMzAyGAggASgIUglmb2xsb3czMDISJgoPZm9yY2VfMzAyX2h0dHBzGA'
+    'kgASgIUg1mb3JjZTMwMkh0dHBz');
+
+@$core.Deprecated('Use setDriveS3ResponseDescriptor instead')
+const SetDriveS3Response$json = {
+  '1': 'SetDriveS3Response',
+  '2': [
+    {'1': 'success', '3': 1, '4': 1, '5': 8, '10': 'success'},
+    {'1': 'message', '3': 2, '4': 1, '5': 9, '10': 'message'},
+  ],
+};
+
+/// Descriptor for `SetDriveS3Response`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List setDriveS3ResponseDescriptor = $convert.base64Decode(
+    'ChJTZXREcml2ZVMzUmVzcG9uc2USGAoHc3VjY2VzcxgBIAEoCFIHc3VjY2VzcxIYCgdtZXNzYW'
+    'dlGAIgASgJUgdtZXNzYWdl');
+
 @$core.Deprecated('Use pingRequestDescriptor instead')
 const PingRequest$json = {
   '1': 'PingRequest',

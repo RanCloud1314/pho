@@ -1836,6 +1836,232 @@ class ListDriveNFSDirResponse extends $pb.GeneratedMessage {
   $core.List<$core.String> get dirs => $_getList(2);
 }
 
+class SetDriveS3Request extends $pb.GeneratedMessage {
+  factory SetDriveS3Request({
+    $core.String? endpoint,
+    $core.String? region,
+    $core.String? accessKeyId,
+    $core.String? secretAccessKey,
+    $core.String? bucket,
+    $core.bool? pathStyle,
+    $core.String? root,
+    $core.bool? follow302,
+    $core.bool? force302Https,
+  }) {
+    final $result = create();
+    if (endpoint != null) {
+      $result.endpoint = endpoint;
+    }
+    if (region != null) {
+      $result.region = region;
+    }
+    if (accessKeyId != null) {
+      $result.accessKeyId = accessKeyId;
+    }
+    if (secretAccessKey != null) {
+      $result.secretAccessKey = secretAccessKey;
+    }
+    if (bucket != null) {
+      $result.bucket = bucket;
+    }
+    if (pathStyle != null) {
+      $result.pathStyle = pathStyle;
+    }
+    if (root != null) {
+      $result.root = root;
+    }
+    if (follow302 != null) {
+      $result.follow302 = follow302;
+    }
+    if (force302Https != null) {
+      $result.force302Https = force302Https;
+    }
+    return $result;
+  }
+  SetDriveS3Request._() : super();
+  factory SetDriveS3Request.fromBuffer($core.List<$core.int> i, [$pb.ExtensionRegistry r = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromBuffer(i, r);
+  factory SetDriveS3Request.fromJson($core.String i, [$pb.ExtensionRegistry r = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromJson(i, r);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(_omitMessageNames ? '' : 'SetDriveS3Request', package: const $pb.PackageName(_omitMessageNames ? '' : 'img_syncer'), createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'endpoint')
+    ..aOS(2, _omitFieldNames ? '' : 'region')
+    ..aOS(3, _omitFieldNames ? '' : 'accessKeyId')
+    ..aOS(4, _omitFieldNames ? '' : 'secretAccessKey')
+    ..aOS(5, _omitFieldNames ? '' : 'bucket')
+    ..aOB(6, _omitFieldNames ? '' : 'pathStyle')
+    ..aOS(7, _omitFieldNames ? '' : 'root')
+    ..aOB(8, _omitFieldNames ? '' : 'follow302', protoName: 'follow_302')
+    ..aOB(9, _omitFieldNames ? '' : 'force302Https', protoName: 'force_302_https')
+    ..hasRequiredFields = false
+  ;
+
+  @$core.Deprecated(
+  'Using this can add significant overhead to your binary. '
+  'Use [GeneratedMessageGenericExtensions.deepCopy] instead. '
+  'Will be removed in next major version')
+  SetDriveS3Request clone() => SetDriveS3Request()..mergeFromMessage(this);
+  @$core.Deprecated(
+  'Using this can add significant overhead to your binary. '
+  'Use [GeneratedMessageGenericExtensions.rebuild] instead. '
+  'Will be removed in next major version')
+  SetDriveS3Request copyWith(void Function(SetDriveS3Request) updates) => super.copyWith((message) => updates(message as SetDriveS3Request)) as SetDriveS3Request;
+
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SetDriveS3Request create() => SetDriveS3Request._();
+  SetDriveS3Request createEmptyInstance() => create();
+  static $pb.PbList<SetDriveS3Request> createRepeated() => $pb.PbList<SetDriveS3Request>();
+  @$core.pragma('dart2js:noInline')
+  static SetDriveS3Request getDefault() => _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<SetDriveS3Request>(create);
+  static SetDriveS3Request? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get endpoint => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set endpoint($core.String v) { $_setString(0, v); }
+  @$pb.TagNumber(1)
+  $core.bool hasEndpoint() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearEndpoint() => clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get region => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set region($core.String v) { $_setString(1, v); }
+  @$pb.TagNumber(2)
+  $core.bool hasRegion() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearRegion() => clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.String get accessKeyId => $_getSZ(2);
+  @$pb.TagNumber(3)
+  set accessKeyId($core.String v) { $_setString(2, v); }
+  @$pb.TagNumber(3)
+  $core.bool hasAccessKeyId() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearAccessKeyId() => clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.String get secretAccessKey => $_getSZ(3);
+  @$pb.TagNumber(4)
+  set secretAccessKey($core.String v) { $_setString(3, v); }
+  @$pb.TagNumber(4)
+  $core.bool hasSecretAccessKey() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearSecretAccessKey() => clearField(4);
+
+  @$pb.TagNumber(5)
+  $core.String get bucket => $_getSZ(4);
+  @$pb.TagNumber(5)
+  set bucket($core.String v) { $_setString(4, v); }
+  @$pb.TagNumber(5)
+  $core.bool hasBucket() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearBucket() => clearField(5);
+
+  @$pb.TagNumber(6)
+  $core.bool get pathStyle => $_getBF(5);
+  @$pb.TagNumber(6)
+  set pathStyle($core.bool v) { $_setBool(5, v); }
+  @$pb.TagNumber(6)
+  $core.bool hasPathStyle() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearPathStyle() => clearField(6);
+
+  @$pb.TagNumber(7)
+  $core.String get root => $_getSZ(6);
+  @$pb.TagNumber(7)
+  set root($core.String v) { $_setString(6, v); }
+  @$pb.TagNumber(7)
+  $core.bool hasRoot() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearRoot() => clearField(7);
+
+  @$pb.TagNumber(8)
+  $core.bool get follow302 => $_getBF(7);
+  @$pb.TagNumber(8)
+  set follow302($core.bool v) { $_setBool(7, v); }
+  @$pb.TagNumber(8)
+  $core.bool hasFollow302() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearFollow302() => clearField(8);
+
+  @$pb.TagNumber(9)
+  $core.bool get force302Https => $_getBF(8);
+  @$pb.TagNumber(9)
+  set force302Https($core.bool v) { $_setBool(8, v); }
+  @$pb.TagNumber(9)
+  $core.bool hasForce302Https() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearForce302Https() => clearField(9);
+}
+
+class SetDriveS3Response extends $pb.GeneratedMessage {
+  factory SetDriveS3Response({
+    $core.bool? success,
+    $core.String? message,
+  }) {
+    final $result = create();
+    if (success != null) {
+      $result.success = success;
+    }
+    if (message != null) {
+      $result.message = message;
+    }
+    return $result;
+  }
+  SetDriveS3Response._() : super();
+  factory SetDriveS3Response.fromBuffer($core.List<$core.int> i, [$pb.ExtensionRegistry r = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromBuffer(i, r);
+  factory SetDriveS3Response.fromJson($core.String i, [$pb.ExtensionRegistry r = $pb.ExtensionRegistry.EMPTY]) => create()..mergeFromJson(i, r);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(_omitMessageNames ? '' : 'SetDriveS3Response', package: const $pb.PackageName(_omitMessageNames ? '' : 'img_syncer'), createEmptyInstance: create)
+    ..aOB(1, _omitFieldNames ? '' : 'success')
+    ..aOS(2, _omitFieldNames ? '' : 'message')
+    ..hasRequiredFields = false
+  ;
+
+  @$core.Deprecated(
+  'Using this can add significant overhead to your binary. '
+  'Use [GeneratedMessageGenericExtensions.deepCopy] instead. '
+  'Will be removed in next major version')
+  SetDriveS3Response clone() => SetDriveS3Response()..mergeFromMessage(this);
+  @$core.Deprecated(
+  'Using this can add significant overhead to your binary. '
+  'Use [GeneratedMessageGenericExtensions.rebuild] instead. '
+  'Will be removed in next major version')
+  SetDriveS3Response copyWith(void Function(SetDriveS3Response) updates) => super.copyWith((message) => updates(message as SetDriveS3Response)) as SetDriveS3Response;
+
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static SetDriveS3Response create() => SetDriveS3Response._();
+  SetDriveS3Response createEmptyInstance() => create();
+  static $pb.PbList<SetDriveS3Response> createRepeated() => $pb.PbList<SetDriveS3Response>();
+  @$core.pragma('dart2js:noInline')
+  static SetDriveS3Response getDefault() => _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<SetDriveS3Response>(create);
+  static SetDriveS3Response? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.bool get success => $_getBF(0);
+  @$pb.TagNumber(1)
+  set success($core.bool v) { $_setBool(0, v); }
+  @$pb.TagNumber(1)
+  $core.bool hasSuccess() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearSuccess() => clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get message => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set message($core.String v) { $_setString(1, v); }
+  @$pb.TagNumber(2)
+  $core.bool hasMessage() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearMessage() => clearField(2);
+}
+
 class PingRequest extends $pb.GeneratedMessage {
   factory PingRequest() => create();
   PingRequest._() : super();
