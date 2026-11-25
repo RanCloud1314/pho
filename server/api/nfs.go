@@ -19,6 +19,7 @@ func (a *api) SetDriveNFS(ctx context.Context, req *pb.SetDriveNFSRequest) (rsp 
 		rsp.Success, rsp.Message = false, fmt.Sprintf("new nfs drive failed: %s", err.Error())
 		return
 	}
+	d.SetTimeoutSec(req.TimeoutSeconds)
 	a.im.SetDrive(d)
 	if req.Root != "" {
 		err := d.SetRootPath(req.Root)

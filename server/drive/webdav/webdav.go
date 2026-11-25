@@ -22,6 +22,7 @@ type Webdav struct {
 	password  string
 	rootPath  string
 	cli       *gowebdav.Client
+	timeout   time.Duration
 	mkdirLock sync.Mutex // serializes mkdir to avoid race in gowebdav lib
 }
 
@@ -30,6 +31,7 @@ func NewWebdavDrive(url, username, password string, insecure bool) *Webdav {
 		url:      url,
 		username: username,
 		password: password,
+		timeout:  60 * time.Second,
 		cli:      gowebdav.NewClient(url, username, password),
 	}
 	d.cli.SetTransport(&http.Transport{
@@ -38,8 +40,20 @@ func NewWebdavDrive(url, username, password string, insecure bool) *Webdav {
 	if insecure {
 		log.Printf("WARNING: TLS certificate verification disabled for WebDAV at %s, do not use in production", url)
 	}
-	d.cli.SetTimeout(60 * time.Second)
+	d.cli.SetTimeout(d.timeout)
 	return d
+}
+
+// cliTimeout 仅用于测试读取当前配置的超时值。
+func (d *Webdav) cliTimeout() time.Duration { return d.timeout }
+
+// SetTimeoutSec 设置请求超时秒数，0 或负数表示不限制。
+func (d *Webdav) SetTimeoutSec(sec int32) {
+	if sec < 0 {
+		sec = 0
+	}
+	d.timeout = time.Duration(sec) * time.Second
+	d.cli.SetTimeout(d.timeout)
 }
 
 func (d *Webdav) Close() error {

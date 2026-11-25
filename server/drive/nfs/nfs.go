@@ -23,6 +23,7 @@ type Nfs struct {
 	rootPath          string
 	mount             *nfs.Mount
 	cli               *nfs.Target
+	rpcTimeout        time.Duration
 	lastConnTimestamp int64
 	connMu            sync.Mutex // 保护重连过程的序列化
 }
@@ -33,24 +34,43 @@ func NewNfsDrive(url string) (*Nfs, error) {
 		return nil, fmt.Errorf("url format error")
 	}
 	d := &Nfs{
-		host:   re[0],
-		target: re[1],
+		host:       re[0],
+		target:     re[1],
+		rpcTimeout: 60 * time.Second,
 	}
 	mount, err := nfs.DialMount(d.host)
 	if err != nil {
 		return nil, err
 	}
-	mount.SetTimeout(60 * time.Second)
+	mount.SetTimeout(d.rpcTimeout)
 	auth := rpc.NewAuthUnix("root", 0, 0)
 	target, err := mount.Mount(d.target, auth.Auth())
 	if err != nil {
 		return nil, err
 	}
-	target.SetTimeout(60 * time.Second)
+	target.SetTimeout(d.rpcTimeout)
 	d.mount = mount
 	d.cli = target
 	return d, nil
 }
+
+// setTimeoutSec 设置每次 RPC 的超时秒数，0 或负数表示不限制。
+// 对已建立的 mount/target 立即生效，重连时沿用。
+func (d *Nfs) setTimeoutSec(sec int32) {
+	if sec < 0 {
+		sec = 0
+	}
+	d.rpcTimeout = time.Duration(sec) * time.Second
+	if d.mount != nil {
+		d.mount.SetTimeout(d.rpcTimeout)
+	}
+	if d.cli != nil {
+		d.cli.SetTimeout(d.rpcTimeout)
+	}
+}
+
+// SetTimeoutSec 是 setTimeoutSec 的导出包装，供 API 层调用。
+func (d *Nfs) SetTimeoutSec(sec int32) { d.setTimeoutSec(sec) }
 
 func (d *Nfs) Close() error {
 	if d.cli != nil {
@@ -109,13 +129,13 @@ func (d *Nfs) checkConn() error {
 	if err != nil {
 		return err
 	}
-	mount.SetTimeout(60 * time.Second)
+	mount.SetTimeout(d.rpcTimeout)
 	auth := rpc.NewAuthUnix("root", 0, 0)
 	target, err := mount.Mount(d.target, auth.Auth())
 	if err != nil {
 		return err
 	}
-	target.SetTimeout(60 * time.Second)
+	target.SetTimeout(d.rpcTimeout)
 	d.mount = mount
 	d.cli = target
 	d.updateLastConnTime()

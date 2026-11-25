@@ -15,6 +15,8 @@ func (a *api) SetDriveWebdav(ctx context.Context, req *pb.SetDriveWebdavRequest)
 		return
 	}
 	d := webdav.NewWebdavDrive(req.Addr, req.Username, req.Password, req.Insecure)
+	// 超时秒数，0 = 不限制；老客户端不传（缺省 0）也会落到不限制，方向安全
+	d.SetTimeoutSec(req.TimeoutSeconds)
 	// Verify server is reachable with credentials by stat-ing root.
 	_, err := d.Cli().Stat("/")
 	if err != nil {
