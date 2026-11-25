@@ -94,6 +94,23 @@ func (s *S3TestSuite) TestUploadDownloadRoundtrip() {
 	s.False(exist)
 }
 
+func (s *S3TestSuite) TestIsExistFollow302() {
+	// follow302 开启时走 list 探测（OpenList 不支持 HEAD）
+	d, err := NewS3(s.endpoint, s.region, s.ak, s.sk, s.bucket, "", true, true, false)
+	s.Require().NoError(err)
+	key := "ex302/2026/11/25/a.jpg"
+	s.upload(d, key)
+
+	exist, err := d.IsExist(key)
+	s.Require().NoError(err)
+	s.True(exist)
+
+	// 前缀相同但不是同一对象
+	exist, err = d.IsExist("ex302/2026/11/25/b.jpg")
+	s.Require().NoError(err)
+	s.False(exist)
+}
+
 func (s *S3TestSuite) TestRootPrefix() {
 	d := s.newDrive("photos")
 	key := "2026/11/25/a.jpg"

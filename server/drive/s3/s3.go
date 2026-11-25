@@ -88,9 +88,22 @@ func (d *S3) Upload(p string, r io.ReadCloser, _ int64, _ time.Time) error {
 }
 
 func (d *S3) IsExist(p string) (bool, error) {
+	key := d.key(p)
+	// OpenList/AList 不支持 HEAD（403），follow302 开启时用 list 探测
+	if d.follow302 {
+		out, err := d.cli.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
+			Bucket:  aws.String(d.bucket),
+			Prefix:  aws.String(key),
+			MaxKeys: aws.Int32(1),
+		})
+		if err != nil {
+			return false, err
+		}
+		return len(out.Contents) > 0 && aws.ToString(out.Contents[0].Key) == key, nil
+	}
 	_, err := d.cli.HeadObject(context.Background(), &s3.HeadObjectInput{
 		Bucket: aws.String(d.bucket),
-		Key:    aws.String(d.key(p)),
+		Key:    aws.String(key),
 	})
 	if err == nil {
 		return true, nil
