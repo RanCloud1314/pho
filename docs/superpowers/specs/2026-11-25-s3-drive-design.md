@@ -87,6 +87,7 @@ SDK：aws-sdk-go-v2；目录语义：ListObjectsV2 delimiter + CommonPrefixes �
 ## 风险
 
 - **凭证明文存 shared_preferences**：与现有 WebDAV/SMB 一致，是既有模式，不单独为 S3 加密存储（如需，应是全局特性）
+- **强制 https 默认关闭（按需求）**：未勾选时 302 可降级到明文直链；endpoint 填 `http://` 时预签名 URL 会明文上网，用户需自行判断是否可信
 - **S3 ListObjectsV2 每页 1000 条**：Range 全量遍历在大 bucket 上偏慢，与现有 `RangeByDate` 全量遍历的性能短板同级，不在本次解决
 - **aws-sdk-go-v2 依赖体积**：会增大 gomobile 产物体积，可接受
 
