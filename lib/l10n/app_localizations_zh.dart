@@ -314,6 +314,15 @@ class AppLocalizationsZh extends AppLocalizations {
   String get refreshUnsynchronizedPhotos => '刷新未同步照片';
 
   @override
+  String get advancedSettings => '高级设置';
+
+  @override
+  String get timeoutSeconds => '超时秒数';
+
+  @override
+  String get timeoutUnlimitedHint => '0 = 不限制';
+
+  @override
   String get onboardingWelcome => '欢迎使用 Pho';
 
   @override

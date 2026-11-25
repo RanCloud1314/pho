@@ -704,6 +704,24 @@ abstract class AppLocalizations {
   /// **'Refresh unsynchronized photos'**
   String get refreshUnsynchronizedPhotos;
 
+  /// No description provided for @advancedSettings.
+  ///
+  /// In en, this message translates to:
+  /// **'Advanced settings'**
+  String get advancedSettings;
+
+  /// No description provided for @timeoutSeconds.
+  ///
+  /// In en, this message translates to:
+  /// **'Timeout (seconds)'**
+  String get timeoutSeconds;
+
+  /// No description provided for @timeoutUnlimitedHint.
+  ///
+  /// In en, this message translates to:
+  /// **'0 = no limit'**
+  String get timeoutUnlimitedHint;
+
   /// No description provided for @onboardingWelcome.
   ///
   /// In en, this message translates to:

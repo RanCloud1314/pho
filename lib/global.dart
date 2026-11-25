@@ -202,6 +202,7 @@ Future<void> initDrive() async {
           password: password,
           share: share,
           root: root,
+          timeoutSeconds: prefs.getInt('smb_timeout') ?? 0,
         ));
         if (rsp.success) {
           logger.addLog("set drive smb success");
@@ -226,6 +227,7 @@ Future<void> initDrive() async {
           password: password,
           root: root,
           insecure: insecure,
+          timeoutSeconds: prefs.getInt('webdav_timeout') ?? 60,
         ));
         if (rsp.success) {
           logger.addLog("set drive webdav success");
@@ -244,6 +246,7 @@ Future<void> initDrive() async {
         final rsp = await storage.cli.setDriveNFS(SetDriveNFSRequest(
           addr: addr,
           root: root,
+          timeoutSeconds: prefs.getInt('nfs_timeout') ?? 60,
         ));
         if (rsp.success) {
           logger.addLog("set drive nfs success");

@@ -7,6 +7,7 @@ import 'package:path/path.dart' as path;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:img_syncer/global.dart';
 import 'package:img_syncer/design_tokens.dart';
+import 'package:img_syncer/storageform/timeout_field.dart';
 
 class NFSForm extends StatefulWidget {
   const NFSForm({Key? key}) : super(key: key);
@@ -20,6 +21,7 @@ class NFSFormState extends State<NFSForm> {
   final GlobalKey _formKey = GlobalKey<FormState>();
   TextEditingController? urlController;
   TextEditingController? rootPathController;
+  TextEditingController? timeoutController;
   bool testSuccess = false;
   String? errormsg;
   String currentPath = "";
@@ -29,6 +31,7 @@ class NFSFormState extends State<NFSForm> {
     super.initState();
     urlController = TextEditingController();
     rootPathController = TextEditingController();
+    timeoutController = TextEditingController();
     SharedPreferences.getInstance().then((prefs) {
       final url = prefs.getString("nfs_url");
       final rootPath = prefs.getString("nfs_root_path");
@@ -38,6 +41,7 @@ class NFSFormState extends State<NFSForm> {
       if (rootPath != null) {
         rootPathController!.text = rootPath;
       }
+      timeoutController!.text = (prefs.getInt('nfs_timeout') ?? 60).toString();
     });
   }
 
@@ -48,7 +52,10 @@ class NFSFormState extends State<NFSForm> {
       return false;
     }
     try {
-      final rsp1 = await storage.cli.setDriveNFS(SetDriveNFSRequest(addr: url));
+      final rsp1 = await storage.cli.setDriveNFS(SetDriveNFSRequest(
+          addr: url,
+          timeoutSeconds:
+              parseTimeoutSeconds(timeoutController!.text, 60)));
       if (!rsp1.success) {
         setState(() {
           errormsg = rsp1.message;
@@ -93,7 +100,10 @@ class NFSFormState extends State<NFSForm> {
     }
     try {
       final rsp = await storage.cli
-          .setDriveNFS(SetDriveNFSRequest(addr: url, root: rootPath));
+          .setDriveNFS(SetDriveNFSRequest(
+              addr: url, root: rootPath,
+              timeoutSeconds:
+                  parseTimeoutSeconds(timeoutController!.text, 60)));
       if (!rsp.success) {
         setState(() {
           errormsg = rsp.message;
@@ -159,6 +169,8 @@ class NFSFormState extends State<NFSForm> {
                 SharedPreferences.getInstance().then((prefs) {
                   prefs.setString("nfs_url", url);
                   prefs.setString("nfs_root_path", rootPath);
+                  prefs.setInt("nfs_timeout",
+                      parseTimeoutSeconds(timeoutController!.text, 60));
                   prefs.setString("drive", driveName[Drive.nfs]!);
                 });
                 settingModel.setRemoteStorageSetted(true);
@@ -220,6 +232,7 @@ class NFSFormState extends State<NFSForm> {
               ),
             ),
           ),
+          advancedSettingsTile(timeoutSettingField(timeoutController!)),
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [

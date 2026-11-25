@@ -6,6 +6,7 @@ import 'package:img_syncer/storage/storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:img_syncer/global.dart';
 import 'package:img_syncer/design_tokens.dart';
+import 'package:img_syncer/storageform/timeout_field.dart';
 
 class WebDavForm extends StatefulWidget {
   const WebDavForm({Key? key}) : super(key: key);
@@ -21,6 +22,7 @@ class WebDavFormState extends State<WebDavForm> {
   TextEditingController? usernameController;
   TextEditingController? passwordController;
   TextEditingController? rootPathController;
+  TextEditingController? timeoutController;
   bool testSuccess = false;
   String? errormsg;
   String currentPath = "";
@@ -33,11 +35,14 @@ class WebDavFormState extends State<WebDavForm> {
     usernameController = TextEditingController();
     passwordController = TextEditingController();
     rootPathController = TextEditingController();
+    timeoutController = TextEditingController();
     SharedPreferences.getInstance().then((prefs) {
       urlController!.text = prefs.getString('webdav_url') ?? "";
       usernameController!.text = prefs.getString('webdav_username') ?? "";
       passwordController!.text = prefs.getString('webdav_password') ?? "";
       rootPathController!.text = prefs.getString('webdav_root_path') ?? "";
+      timeoutController!.text =
+          (prefs.getInt('webdav_timeout') ?? 60).toString();
       setState(() {
         insecure = prefs.getBool('webdav_insecure') ?? true;
       });
@@ -54,7 +59,9 @@ class WebDavFormState extends State<WebDavForm> {
     try {
       final rsp2 = await storage.cli.setDriveWebdav(SetDriveWebdavRequest(
           addr: url, username: username, password: password,
-          insecure: insecure));
+          insecure: insecure,
+          timeoutSeconds:
+              parseTimeoutSeconds(timeoutController!.text, 60)));
       if (!rsp2.success) {
         setState(() {
           errormsg = rsp2.message;
@@ -117,7 +124,9 @@ class WebDavFormState extends State<WebDavForm> {
     try {
       final rsp = await storage.cli.setDriveWebdav(SetDriveWebdavRequest(
           addr: url, username: username, password: password, root: rootPath,
-          insecure: insecure));
+          insecure: insecure,
+          timeoutSeconds:
+              parseTimeoutSeconds(timeoutController!.text, 60)));
       if (!rsp.success) {
         setState(() {
           errormsg = rsp.message;
@@ -171,6 +180,10 @@ class WebDavFormState extends State<WebDavForm> {
                   value.setString('webdav_username', username);
                   value.setString('webdav_password', password);
                   value.setString('webdav_root_path', rootPath);
+                  value.setInt(
+                      'webdav_timeout',
+                      parseTimeoutSeconds(
+                          timeoutController!.text, 60));
                   value.setString('drive', driveName[Drive.webDav]!);
                 });
                 settingModel.setRemoteStorageSetted(true);
@@ -246,6 +259,7 @@ class WebDavFormState extends State<WebDavForm> {
         ),
       ),
     ));
+    children.add(advancedSettingsTile(timeoutSettingField(timeoutController!)));
     children.add(Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [

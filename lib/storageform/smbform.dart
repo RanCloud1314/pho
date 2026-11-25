@@ -6,6 +6,7 @@ import 'package:img_syncer/storage/storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:img_syncer/global.dart';
 import 'package:img_syncer/design_tokens.dart';
+import 'package:img_syncer/storageform/timeout_field.dart';
 
 class SMBForm extends StatefulWidget {
   const SMBForm({Key? key}) : super(key: key);
@@ -21,6 +22,7 @@ class _SMBFormState extends State<SMBForm> {
   TextEditingController? smbPasswordController;
   TextEditingController? smbShareController;
   TextEditingController? smbRootPathController;
+  TextEditingController? smbTimeoutController;
   bool testSuccess = false;
   String? errormsg;
 
@@ -36,17 +38,20 @@ class _SMBFormState extends State<SMBForm> {
     smbPasswordController = TextEditingController();
     smbShareController = TextEditingController();
     smbRootPathController = TextEditingController();
+    smbTimeoutController = TextEditingController();
     SharedPreferences.getInstance().then((prefs) {
       final smbAddr = prefs.getString("addr");
       final smbUsername = prefs.getString("username");
       final smbPassword = prefs.getString("password");
       final smbShare = prefs.getString("share");
       final smbRootPath = prefs.getString("rootPath");
+      final smbTimeout = prefs.getInt("smb_timeout");
       smbAddrController!.text = smbAddr ?? "";
       smbUsernameController!.text = smbUsername ?? "";
       smbPasswordController!.text = smbPassword ?? "";
       smbShareController!.text = smbShare ?? "";
       smbRootPathController!.text = smbRootPath ?? "";
+      smbTimeoutController!.text = (smbTimeout ?? 0).toString();
 
       smbShareController!.addListener(() {
         if (smbShare == smbShareController!.text) {
@@ -71,6 +76,8 @@ class _SMBFormState extends State<SMBForm> {
       addr: a,
       username: u,
       password: p,
+      timeoutSeconds:
+          parseTimeoutSeconds(smbTimeoutController!.text, 0),
     ));
     if (!rsp1.success) {
       setState(() {
@@ -180,6 +187,7 @@ class _SMBFormState extends State<SMBForm> {
           ),
         ),
       ),
+      advancedSettingsTile(timeoutSettingField(smbTimeoutController!)),
       Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
@@ -374,6 +382,8 @@ class _SMBFormState extends State<SMBForm> {
           password: smbPasswordController!.text,
           share: smbShareController!.text,
           root: smbRootPathController!.text,
+          timeoutSeconds:
+              parseTimeoutSeconds(smbTimeoutController!.text, 0),
         ));
         if (rsp.success) {
           ListByDateResponse rsp =
@@ -432,6 +442,10 @@ class _SMBFormState extends State<SMBForm> {
                   value.setString('password', smbPasswordController!.text);
                   value.setString('share', smbShareController!.text);
                   value.setString('rootPath', smbRootPathController!.text);
+                  value.setInt(
+                      'smb_timeout',
+                      parseTimeoutSeconds(
+                          smbTimeoutController!.text, 0));
                   value.setString('drive', driveName[Drive.smb]!);
                 });
                 settingModel.setRemoteStorageSetted(true);

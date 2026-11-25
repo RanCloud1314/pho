@@ -322,6 +322,15 @@ class AppLocalizationsEn extends AppLocalizations {
   String get refreshUnsynchronizedPhotos => 'Refresh unsynchronized photos';
 
   @override
+  String get advancedSettings => 'Advanced settings';
+
+  @override
+  String get timeoutSeconds => 'Timeout (seconds)';
+
+  @override
+  String get timeoutUnlimitedHint => '0 = no limit';
+
+  @override
   String get onboardingWelcome => 'Welcome to Pho';
 
   @override
