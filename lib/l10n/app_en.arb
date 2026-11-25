@@ -170,5 +170,8 @@
   "syncFilterDateBefore": "End date",
   "syncFilterFileType": "Only sync these file types",
   "themeColor": "Theme Color",
-  "themeColorDesc": "Change to your preferred theme color"
+  "themeColorDesc": "Change to your preferred theme color",
+  "advancedSettings": "Advanced settings",
+  "timeoutSeconds": "Timeout (seconds)",
+  "timeoutUnlimitedHint": "0 = no limit"
 }

@@ -170,5 +170,8 @@
   "syncFilterDateBefore": "结束日期",
   "syncFilterFileType": "同步以下文件类型",
   "themeColor": "主题颜色",
-  "themeColorDesc": "修改为你喜欢的主题颜色"
+  "themeColorDesc": "修改为你喜欢的主题颜色",
+  "advancedSettings": "高级设置",
+  "timeoutSeconds": "超时秒数",
+  "timeoutUnlimitedHint": "0 = 不限制"
 }

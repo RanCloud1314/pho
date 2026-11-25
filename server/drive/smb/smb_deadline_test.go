@@ -99,3 +99,70 @@ func TestDeadlineReaderPassesDataThrough(t *testing.T) {
 		t.Fatalf("got %q, want hello", string(buf))
 	}
 }
+
+// deadlineWriter：对端不读时写阻塞，超时后 Write 返回超时错误。
+func TestDeadlineWriterTimesOutWhenStalled(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+	// c2 无人读，Write 会阻塞
+	s := &Smb{conn: c1, timeout: 80 * time.Millisecond}
+	w := &deadlineWriter{Writer: c1, s: s}
+	start := time.Now()
+	_, err := w.Write([]byte("xxxxxxxx"))
+	if err == nil {
+		t.Fatal("write succeeded, want deadline exceeded")
+	}
+	if ne, ok := err.(interface{ Timeout() bool }); !ok || !ne.Timeout() {
+		t.Fatalf("err = %v, want timeout error", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("write blocked %v, deadline not applied", elapsed)
+	}
+}
+
+// Write 成功后 deadline 立即清除：之后的裸 Read 不受残留 deadline 影响。
+func TestDeadlineWriterClearsDeadlineAfterWrite(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+	go func() {
+		buf := make([]byte, 8)
+		io.ReadFull(c2, buf)
+	}()
+	s := &Smb{conn: c1, timeout: 50 * time.Millisecond}
+	w := &deadlineWriter{Writer: c1, s: s}
+	if _, err := w.Write([]byte("xxxxxxxx")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// 裸 Read（不经 wrapper）：若残留 deadline，会在 50ms 内失败
+	errCh := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 1)
+		_, err := c1.Read(buf)
+		errCh <- err
+	}()
+	select {
+	case err := <-errCh:
+		t.Fatalf("read returned %v, want blocking (deadline cleared)", err)
+	case <-time.After(150 * time.Millisecond):
+		// 仍阻塞：deadline 已清除，符合预期
+	}
+	c1.Close()
+}
+
+// timeout = 0 时 deadlineWriter 完全不设 deadline：写正常完成。
+func TestDeadlineWriterDisabledWhenTimeoutZero(t *testing.T) {
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+	go func() {
+		buf := make([]byte, 4)
+		io.ReadFull(c2, buf)
+	}()
+	s := &Smb{conn: c1, timeout: 0}
+	w := &deadlineWriter{Writer: c1, s: s}
+	if _, err := w.Write([]byte("data")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+}

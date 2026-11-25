@@ -62,6 +62,8 @@ class _SMBFormState extends State<SMBForm> {
           username: smbUsername,
           password: smbPassword,
           share: smbShare,
+          timeoutSeconds:
+              parseTimeoutSeconds(smbTimeoutController!.text, 0),
         ));
         smbRootPathController!.text = "";
       });

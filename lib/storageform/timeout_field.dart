@@ -20,11 +20,14 @@ Widget timeoutSettingField(TextEditingController controller) {
   );
 }
 
-/// 解析超时秒数：空/非法 → fallback（表单默认值），负数按 0。
+/// 解析超时秒数：空/非法 → fallback（表单默认值），负数按 0，
+/// 超大数字 clamp 到 int32 上限（protobuf int32 会抛 ArgumentError）。
 int parseTimeoutSeconds(String text, int fallback) {
   final v = int.tryParse(text.trim());
   if (v == null) return fallback;
-  return v < 0 ? 0 : v;
+  if (v < 0) return 0;
+  if (v > 2147483647) return 2147483647;
+  return v;
 }
 
 /// 高级设置折叠区。

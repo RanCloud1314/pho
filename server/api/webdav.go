@@ -15,14 +15,15 @@ func (a *api) SetDriveWebdav(ctx context.Context, req *pb.SetDriveWebdavRequest)
 		return
 	}
 	d := webdav.NewWebdavDrive(req.Addr, req.Username, req.Password, req.Insecure)
-	// 超时秒数，0 = 不限制；老客户端不传（缺省 0）也会落到不限制，方向安全
-	d.SetTimeoutSec(req.TimeoutSeconds)
-	// Verify server is reachable with credentials by stat-ing root.
+	// 先用默认 60s 探测连通性，探测通过后再应用用户超时，
+	// 避免用户设 0（不限）时"测试连接"无限转圈
 	_, err := d.Cli().Stat("/")
 	if err != nil {
 		rsp.Success, rsp.Message = false, fmt.Sprintf("connect to %s failed: %s", req.Addr, err.Error())
 		return
 	}
+	// 超时秒数，0 = 不限制；老客户端不传（缺省 0）也会落到不限制，方向安全
+	d.SetTimeoutSec(req.TimeoutSeconds)
 	a.im.SetDrive(d)
 	if req.Root != "" {
 		err := d.SetRootPath(req.Root)

@@ -55,32 +55,50 @@ func (s *Smb) SetTimeoutSec(sec int32) {
 	s.timeout = time.Duration(sec) * time.Second
 }
 
-// deadlineReader 在每次 Read 前把 conn 的读写 deadline 续到 now+timeout。
-// shortcut: 并发上传共享同一 conn 时 deadline 相互续期，单个卡死流检测不到；
-// 需要精确按流超时时再升级为 per-stream 机制。
+// deadlineReader 在每次 Read 前设置 conn deadline，Read 返回后立即清除：
+// deadline 只存在于真实网络读期间，不会残留污染共享 conn。
 type deadlineReader struct {
 	io.Reader
 	s *Smb
 }
 
 func (r *deadlineReader) Read(p []byte) (int, error) {
-	if r.s.timeout > 0 && r.s.conn != nil {
-		deadline := time.Now().Add(r.s.timeout)
-		r.s.conn.SetReadDeadline(deadline)
-		r.s.conn.SetWriteDeadline(deadline)
-	}
-	return r.Reader.Read(p)
+	r.s.armDeadline()
+	n, err := r.Reader.Read(p)
+	r.s.clearDeadline()
+	return n, err
 }
 
 func (r *deadlineReader) Close() error {
-	r.s.clearDeadline()
 	if c, ok := r.Reader.(io.Closer); ok {
 		return c.Close()
 	}
 	return nil
 }
 
-// clearDeadline 清除残留的读写 deadline，避免影响后续空闲期操作。
+// deadlineWriter 在每次 Write 前设置 conn deadline，写完立即清除。
+// 上传的卡死（如远端 flush 挂起）发生在写阶段，超时只罩住真实网络写。
+type deadlineWriter struct {
+	io.Writer
+	s *Smb
+}
+
+func (w *deadlineWriter) Write(p []byte) (int, error) {
+	w.s.armDeadline()
+	n, err := w.Writer.Write(p)
+	w.s.clearDeadline()
+	return n, err
+}
+
+func (s *Smb) armDeadline() {
+	if s.timeout > 0 && s.conn != nil {
+		deadline := time.Now().Add(s.timeout)
+		s.conn.SetReadDeadline(deadline)
+		s.conn.SetWriteDeadline(deadline)
+	}
+}
+
+// clearDeadline 清除读写 deadline，避免影响后续空闲期操作。
 func (s *Smb) clearDeadline() {
 	if s.conn != nil {
 		var zero time.Time
@@ -88,12 +106,13 @@ func (s *Smb) clearDeadline() {
 	}
 }
 
-// wrapStallTimeout 给 r 加上无进展超时；未启用（timeout=0）时原样返回。
-func (s *Smb) wrapStallTimeout(r io.Reader) io.Reader {
+// wrapStallTimeout 给上传写入包一层无进展超时；未启用（timeout=0）时原样返回。
+// shortcut: 源 reader 卡死（客户端 HTTP 体不产出）不会在此层超时，属 HTTP 层职责。
+func (s *Smb) wrapStallTimeout(w io.Writer) io.Writer {
 	if s.timeout <= 0 {
-		return r
+		return w
 	}
-	return &deadlineReader{Reader: r, s: s}
+	return &deadlineWriter{Writer: w, s: s}
 }
 
 func (s *Smb) lastConnTime() time.Time {
@@ -139,15 +158,14 @@ func (s *Smb) checkConn() error {
 	return s.Connect()
 }
 
-func (s *Smb) Dial() (*smb2.Session, error) {
+func (s *Smb) dial() (*smb2.Session, net.Conn, error) {
 	if s.addr == "" || s.username == "" {
-		return nil, fmt.Errorf("smb config error: addr=%s, username=%s, password=***, shareName=%s", s.addr, s.username, s.shareName)
+		return nil, nil, fmt.Errorf("smb config error: addr=%s, username=%s, password=***, shareName=%s", s.addr, s.username, s.shareName)
 	}
 	conn, err := (&net.Dialer{Timeout: 30 * time.Second}).Dial("tcp", s.addr)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	s.conn = conn
 	d := &smb2.Dialer{
 		Initiator: &smb2.NTLMInitiator{
 			User:     s.username,
@@ -156,22 +174,33 @@ func (s *Smb) Dial() (*smb2.Session, error) {
 	}
 	sess, err := d.Dial(conn)
 	if err != nil {
-		return nil, err
+		conn.Close()
+		return nil, nil, err
 	}
-	return sess, nil
+	return sess, conn, nil
+}
+
+// Dial 建立临时 session（不保存 conn），供 ListShare 等浏览操作使用。
+func (s *Smb) Dial() (*smb2.Session, error) {
+	sess, _, err := s.dial()
+	return sess, err
 }
 
 func (s *Smb) Connect() error {
 	if s.shareName == "" {
 		return fmt.Errorf("smb share name is empty")
 	}
-	sess, err := s.Dial()
+	sess, conn, err := s.dial()
 	if err != nil {
 		return err
 	}
+	// 只有挂载主 session 的连接才作为 deadline 超时的目标 conn
+	s.conn = conn
 
 	s.fs, err = sess.Mount(s.shareName)
 	if err != nil {
+		s.conn = nil
+		conn.Close()
 		return err
 	}
 	s.updateLastConnTime()
@@ -247,8 +276,7 @@ func (s *Smb) Upload(path string, content io.ReadCloser, size int64, lastModifie
 		return err
 	}
 
-	_, copyErr := io.Copy(f, s.wrapStallTimeout(content))
-	s.clearDeadline()
+	_, copyErr := io.Copy(s.wrapStallTimeout(f), content)
 	closeErr := f.Close()
 	if copyErr != nil {
 		// 删除残缺文件，防止 FilterNotUploaded 按名匹配将其标记为已上传（issue #83/#82）
