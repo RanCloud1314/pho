@@ -19,6 +19,8 @@ service ImgSyncer {
   // NFS Drive
   rpc SetDriveNFS (SetDriveNFSRequest) returns (SetDriveNFSResponse) {}
   rpc ListDriveNFSDir (ListDriveNFSDirRequest) returns (ListDriveNFSDirResponse) {}
+  // S3 Drive
+  rpc SetDriveS3 (SetDriveS3Request) returns (SetDriveS3Response) {}
   // Ping
   rpc Ping (PingRequest) returns (PingResponse) {}
 }
@@ -165,6 +167,21 @@ message ListDriveNFSDirResponse {
   bool success = 1;
   string message = 2;
   repeated string dirs = 3;
+}
+
+message SetDriveS3Request {
+  string endpoint = 1;
+  string region = 2;
+  string access_key_id = 3;
+  string secret_access_key = 4;
+  string bucket = 5;
+  bool path_style = 6;
+  string root = 7;
+}
+
+message SetDriveS3Response {
+  bool success = 1;
+  string message = 2;
 }
 
 message PingRequest {}
