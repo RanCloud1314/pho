@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -62,7 +63,8 @@ func NewS3(endpoint, region, accessKeyID, secretAccessKey, bucket, root string, 
 }
 
 func (d *S3) key(p string) string {
-	return path.Join(d.root, p)
+	// Windows 上上游 genPath 会产出反斜杠，S3 key 必须是 /
+	return path.Join(d.root, filepath.ToSlash(p))
 }
 
 // Ping 用列目录探测连通性：OpenList/gofakes3 类服务端不支持 HEAD（坑 5）
@@ -240,7 +242,11 @@ func (d *S3) Delete(p string) error {
 
 // prefix 把目录转成列举前缀，非空时保证以 / 结尾
 func (d *S3) prefix(dir string) string {
-	full := path.Join(d.root, strings.Trim(dir, "/"))
+	dir = strings.Trim(filepath.ToSlash(dir), "/")
+	if dir == "." { // imgmanager 用 "." 表示根目录
+		dir = ""
+	}
+	full := path.Join(d.root, dir)
 	if full == "" {
 		return ""
 	}
