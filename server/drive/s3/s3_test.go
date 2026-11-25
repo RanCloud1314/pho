@@ -238,6 +238,69 @@ func TestFollow302Download(t *testing.T) {
 	require.Empty(t, directHit.Get("Authorization"), "direct link must not carry Authorization")
 }
 
+func TestFollow302RangeHonoredByServer(t *testing.T) {
+	// 标准 S3/R2/MinIO 接受签名 Range，不该整文件重下
+	var gotRange string
+	var redirected bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRange = r.Header.Get("Range")
+		if gotRange == "" {
+			redirected = true
+			w.Header().Set("Location", "http://127.0.0.1:1/nope")
+			w.WriteHeader(http.StatusFound)
+			return
+		}
+		start := 0
+		fmt.Sscanf(gotRange, "bytes=%d-", &start)
+		w.Header().Set("Content-Length", strconv.Itoa(len(static.Pic1)-start))
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, len(static.Pic1)-1, len(static.Pic1)))
+		w.WriteHeader(http.StatusPartialContent)
+		w.Write(static.Pic1[start:])
+	}))
+	defer server.Close()
+
+	d, err := NewS3(server.URL, "us-east-1", "ak", "sk", "bucket", "", true, true, false)
+	require.NoError(t, err)
+	rc, size, err := d.DownloadWithOffset("a.jpg", 7)
+	require.NoError(t, err)
+	b, _ := io.ReadAll(rc)
+	rc.Close()
+	require.Equal(t, static.Pic1[7:], b)
+	require.Equal(t, int64(len(static.Pic1)), size)
+	require.Equal(t, "bytes=7-", gotRange)
+	require.False(t, redirected, "ranged GET succeeded, no 302 hop expected")
+}
+
+func TestNormalizeEndpoint(t *testing.T) {
+	require.Equal(t, "https://minio.local:9000", normalizeEndpoint("minio.local:9000"))
+	require.Equal(t, "http://127.0.0.1:9000", normalizeEndpoint("http://127.0.0.1:9000"))
+	require.Equal(t, "", normalizeEndpoint(""))
+}
+
+// offset == 文件大小（已下完）时直链回 416，应当当空 body 处理
+func TestFollow302OffsetAtEOF(t *testing.T) {
+	total := len(static.Pic1)
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", total))
+		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+	}))
+	defer direct.Close()
+	openlist := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", direct.URL+"/file")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer openlist.Close()
+
+	d, err := NewS3(openlist.URL, "us-east-1", "ak", "sk", "bucket", "", true, true, false)
+	require.NoError(t, err)
+	rc, size, err := d.DownloadWithOffset("a.jpg", int64(total))
+	require.NoError(t, err)
+	b, _ := io.ReadAll(rc)
+	rc.Close()
+	require.Empty(t, b)
+	require.Equal(t, int64(total), size)
+}
+
 func TestFollow302ForceHttps(t *testing.T) {
 	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", strconv.Itoa(len(static.Pic1)))

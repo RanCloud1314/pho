@@ -30,6 +30,8 @@ type S3 struct {
 	cli           *s3.Client
 	presigner     *s3.PresignClient
 	uploader      *manager.Uploader
+	httpNoRedir   *http.Client // 第一步：手动看 302
+	httpFollow    *http.Client // 第二步：直链可以自己再跳
 	bucket        string
 	root          string
 	follow302     bool
@@ -42,12 +44,18 @@ func NewS3(endpoint, region, accessKeyID, secretAccessKey, bucket, root string, 
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, "")),
 	}
 	if endpoint != "" {
-		opts = append(opts, config.WithBaseEndpoint(endpoint))
+		opts = append(opts, config.WithBaseEndpoint(normalizeEndpoint(endpoint)))
 	}
 	cfg, err := config.LoadDefaultConfig(context.Background(), opts...)
 	if err != nil {
 		return nil, err
 	}
+	// 只限制首字节等待，不限流式 body，否则大视频会被中途掐断
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.ResponseHeaderTimeout = 60 * time.Second
+	noRedir := &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
 	cli := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.UsePathStyle = pathStyle
 	})
@@ -55,11 +63,21 @@ func NewS3(endpoint, region, accessKeyID, secretAccessKey, bucket, root string, 
 		cli:           cli,
 		presigner:     s3.NewPresignClient(cli),
 		uploader:      manager.NewUploader(cli),
+		httpNoRedir:   noRedir,
+		httpFollow:    &http.Client{Transport: tr},
 		bucket:        bucket,
 		root:          strings.Trim(root, "/"),
 		follow302:     follow302,
 		force302HTTPS: force302HTTPS,
 	}, nil
+}
+
+// normalizeEndpoint 补全 scheme：表单允许只填主机名，恢复配置时可能原样传进来
+func normalizeEndpoint(endpoint string) string {
+	if endpoint == "" || strings.Contains(endpoint, "://") {
+		return endpoint
+	}
+	return "https://" + endpoint
 }
 
 func (d *S3) key(p string) string {
@@ -77,29 +95,52 @@ func (d *S3) Ping(ctx context.Context) error {
 	return err
 }
 
-func (d *S3) Upload(p string, r io.ReadCloser, _ int64, _ time.Time) error {
+func (d *S3) Upload(p string, r io.ReadCloser, size int64, _ time.Time) error {
 	defer r.Close()
 	_, err := d.uploader.Upload(context.Background(), &s3.PutObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(d.key(p)),
 		Body:   r,
 	})
-	return err
+	if err != nil || !d.follow302 || size <= 0 {
+		return err
+	}
+	// OpenList 前面的 nginx/WAF 可能吞掉 PUT body 仍返回 200（指南坑 6），落盘后核对大小
+	ok, got, err := d.probe(context.Background(), d.key(p))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("s3 upload %s: object missing after upload", p)
+	}
+	if got != size {
+		return fmt.Errorf("s3 upload %s: stored size %d != %d (body likely dropped by a proxy)", p, got, size)
+	}
+	return nil
+}
+
+// probe 用 list 精确探测单个对象：OpenList 不支持 HEAD（坑 5）
+func (d *S3) probe(ctx context.Context, key string) (bool, int64, error) {
+	out, err := d.cli.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket:  aws.String(d.bucket),
+		Prefix:  aws.String(key),
+		MaxKeys: aws.Int32(1),
+	})
+	if err != nil {
+		return false, 0, err
+	}
+	if len(out.Contents) == 0 || aws.ToString(out.Contents[0].Key) != key {
+		return false, 0, nil
+	}
+	return true, aws.ToInt64(out.Contents[0].Size), nil
 }
 
 func (d *S3) IsExist(p string) (bool, error) {
 	key := d.key(p)
 	// OpenList/AList 不支持 HEAD（403），follow302 开启时用 list 探测
 	if d.follow302 {
-		out, err := d.cli.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
-			Bucket:  aws.String(d.bucket),
-			Prefix:  aws.String(key),
-			MaxKeys: aws.Int32(1),
-		})
-		if err != nil {
-			return false, err
-		}
-		return len(out.Contents) > 0 && aws.ToString(out.Contents[0].Key) == key, nil
+		ok, _, err := d.probe(context.Background(), key)
+		return ok, err
 	}
 	_, err := d.cli.HeadObject(context.Background(), &s3.HeadObjectInput{
 		Bucket: aws.String(d.bucket),
@@ -128,8 +169,19 @@ func (d *S3) DownloadWithOffset(p string, offset int64) (io.ReadCloser, int64, e
 
 func (d *S3) download(ctx context.Context, p string, offset int64) (io.ReadCloser, int64, error) {
 	if d.follow302 {
+		if offset > 0 {
+			// 标准 S3/R2/MinIO 支持签名 Range，先走 SDK 只取尾部；
+			// OpenList 拒绝带 Range 的签名请求（坑 4），失败后退回 302 流程（本地丢弃前 offset 字节）
+			if rc, size, err := d.getObject(ctx, p, offset); err == nil {
+				return rc, size, nil
+			}
+		}
 		return d.downloadFollow302(ctx, p, offset)
 	}
+	return d.getObject(ctx, p, offset)
+}
+
+func (d *S3) getObject(ctx context.Context, p string, offset int64) (io.ReadCloser, int64, error) {
 	in := &s3.GetObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(d.key(p)),
@@ -159,14 +211,12 @@ func (d *S3) downloadFollow302(ctx context.Context, p string, offset int64) (io.
 	if err != nil {
 		return nil, 0, err
 	}
-	cli := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	defer cli.CloseIdleConnections()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, po.URL, nil)
 	if err != nil {
 		return nil, 0, err
 	}
-	rsp, err := cli.Do(req)
+	rsp, err := d.httpNoRedir.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -187,10 +237,10 @@ func (d *S3) downloadFollow302(ctx context.Context, p string, offset int64) (io.
 	}
 	u, err := url.Parse(loc)
 	if err != nil {
-		return nil, 0, fmt.Errorf("s3 download %s: bad Location %q: %w", p, loc, err)
+		return nil, 0, fmt.Errorf("s3 download %s: bad Location: %w", p, err)
 	}
 	if d.force302HTTPS && u.Scheme != "https" {
-		return nil, 0, fmt.Errorf("s3 download %s: redirect Location is not https: %s", p, loc)
+		return nil, 0, fmt.Errorf("s3 download %s: redirect Location scheme is %q, want https", p, u.Scheme)
 	}
 
 	req2, err := http.NewRequestWithContext(ctx, http.MethodGet, loc, nil)
@@ -200,9 +250,18 @@ func (d *S3) downloadFollow302(ctx context.Context, p string, offset int64) (io.
 	if offset > 0 {
 		req2.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
-	rsp2, err := cli.Do(req2)
+	// 直链是 CDN，可能再跳一次；不带任何签名头，跟随便安全
+	rsp2, err := d.httpFollow.Do(req2)
 	if err != nil {
 		return nil, 0, err
+	}
+	if rsp2.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+		rsp2.Body.Close()
+		total, _ := parseTotal(rsp2.Header.Get("Content-Range"))
+		if total == 0 {
+			total = offset
+		}
+		return io.NopCloser(strings.NewReader("")), total, nil
 	}
 	if rsp2.StatusCode != http.StatusOK && rsp2.StatusCode != http.StatusPartialContent {
 		rsp2.Body.Close()
@@ -328,9 +387,14 @@ type fileInfo struct {
 	dir  bool
 }
 
-func (f *fileInfo) Name() string       { return f.name }
-func (f *fileInfo) Size() int64        { return f.size }
-func (f *fileInfo) Mode() fs.FileMode  { return 0644 }
+func (f *fileInfo) Name() string { return f.name }
+func (f *fileInfo) Size() int64  { return f.size }
+func (f *fileInfo) Mode() fs.FileMode {
+	if f.dir {
+		return fs.ModeDir | 0o755
+	}
+	return 0o644
+}
 func (f *fileInfo) ModTime() time.Time { return f.mod }
 func (f *fileInfo) IsDir() bool        { return f.dir }
 func (f *fileInfo) Sys() any           { return nil }

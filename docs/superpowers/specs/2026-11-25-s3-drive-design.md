@@ -56,15 +56,15 @@ SDK：aws-sdk-go-v2；目录语义：ListObjectsV2 delimiter + CommonPrefixes �
 ### `server/drive/s3/s3.go`
 
 - `type S3 struct { cli *s3.Client, uploader *manager.Uploader, bucket, root string }`
-- 客户端构造：`config.LoadDefaultConfig` + `aws.String(ak/sk)` 静态凭证 + 自定义 `BaseEndpoint` + `UsePathStyle`；endpoint 为空时不设，走 AWS 默认。`root` 来自请求（可选，空 = bucket 根），key 拼接统一用 `path.Join`（勿用 `filepath.Join`，Windows 反斜杠会污染 S3 key）
+- 客户端构造：`config.LoadDefaultConfig` + `aws.String(ak/sk)` 静态凭证 + 自定义 `BaseEndpoint` + `UsePathStyle`；endpoint 为空时不设，走 AWS 默认；只写了主机名（无 scheme）时补 `https://`（表单/配置恢复都可能传裸主机名）。`root` 来自请求（可选，空 = bucket 根），key 拼接统一用 `path.Join`（勿用 `filepath.Join`，Windows 反斜杠会污染 S3 key）
 - 连通探测：用 ListObjectsV2（MaxKeys=1）而非 HeadBucket——OpenList/gofakes3 类服务端不支持 HEAD（坑 5）
-- 302 下载（Follow302 开启时）：`Download`/`DownloadWithOffset` 走 `s3.NewPresignClient` 预签名 GetObject（**不含 Range**），用普通 `http.Client`（`CheckRedirect: ErrUseLastResponse`）请求；200 → 直接返回流；302 → 取 `Location`（Force302Https 开启时校验 scheme 为 https）→ 对直链发 GET，**只带 `Range` 头**（有 offset 时），不带 Authorization/签名头；返回流与长度。Follow302 关闭时走 SDK GetObject 常规路径
-- `Upload(path, r, size, modtime)`：`manager.Uploader.Upload`（超 5MiB 自动分片，每片 5MiB，与 OpenList 指南建议一致），读完后 `r.Close()`；modtime 无法设置到对象元数据之外，不额外写 metadata（保持与其他 drive 一致的最小行为）
+- 下载（Follow302 开启时）：`offset > 0` 先用 SDK GetObject 带签名 Range 直达（标准 S3/R2/MinIO 支持，避免整文件重下）；该请求失败（OpenList 拒绝签名 Range，坑 4）才退回两步流程。两步流程：`s3.NewPresignClient` 预签名 GetObject（**不含 Range**），用 `http.Client`（`CheckRedirect: ErrUseLastResponse`）请求；200 → 直接返回流；302 → 取 `Location`（Force302Https 开启时校验 scheme 为 https）→ 对直链发 GET，**只带 `Range` 头**（有 offset 时），不带 Authorization/签名头，允许 CDN 再跳转；206 用 `Content-Range` 的总长，200 则本地丢弃前 offset 字节，416（offset 等于文件长度）返回空 body。Follow302 关闭时走 SDK GetObject 常规路径。HTTP 客户端只设 `ResponseHeaderTimeout`，不限流式 body 时长
+- `Upload(path, r, size, modtime)`：`manager.Uploader.Upload`（超 5MiB 自动分片，每片 5MiB，与 OpenList 指南建议一致），读完后 `r.Close()`；modtime 无法设置到对象元数据之外，不额外写 metadata（保持与其他 drive 一致的最小行为）。Follow302 开启时上传后用 list 核对对象存在且大小一致（OpenList 前的 WAF 可能吞掉 body 仍返回 200，坑 6）
 - `IsExist(path)`：Follow302 关闭时 HeadObject，404 → false；Follow302 开启时改用 `ListObjectsV2(Prefix=完整 key, MaxKeys=1)` 精确匹配（OpenList 的 head_object 返回 403，指南坑 5）
 - `Download(path)`：GetObject → (Body, ContentLength)
 - `DownloadWithOffset(path, offset)`：GetObject 带 `Range: bytes=offset-`
 - `Delete(path)`：DeleteObject（S3 删除即成功，无 NoSuchKey 报错语义）
-- `Range(dir, deal)`：ListObjectsV2 分页遍历 prefix=`root+dir`、delimiter=`/`；Contents 逐个构造 `fs.FileInfo`（name=去掉前缀后的 basename，size=Size，modtime=LastModified，isDir=false）回调；CommonPrefixes 同样回调为 isDir=true 的 FileInfo（RangeByDate 只对目录递归，需此形态）。deal 返回 false 时停止分页
+- `Range(dir, deal)`：ListObjectsV2 分页遍历 prefix=`root+dir`、delimiter=`/`；Contents 逐个构造 `fs.FileInfo`（name=去掉前缀后的 basename，size=Size，modtime=LastModified，isDir=false）回调；CommonPrefixes 同样回调为 isDir=true 的 FileInfo（RangeByDate 只对目录递归，需此形态）。排序需要全量数据，故先收集全部页再按 ModTime 降序排序（与 WebDAV 一致），然后逐个回调；deal 返回 false 时停止回调
 - `Close()`：无状态连接，返回 nil
 - 所有错误原样包装返回，不吞错
 
