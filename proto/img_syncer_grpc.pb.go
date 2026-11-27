@@ -33,6 +33,8 @@ type ImgSyncerClient interface {
 	// NFS Drive
 	SetDriveNFS(ctx context.Context, in *SetDriveNFSRequest, opts ...grpc.CallOption) (*SetDriveNFSResponse, error)
 	ListDriveNFSDir(ctx context.Context, in *ListDriveNFSDirRequest, opts ...grpc.CallOption) (*ListDriveNFSDirResponse, error)
+	// S3 Drive
+	SetDriveS3(ctx context.Context, in *SetDriveS3Request, opts ...grpc.CallOption) (*SetDriveS3Response, error)
 	// Ping
 	Ping(ctx context.Context, in *PingRequest, opts ...grpc.CallOption) (*PingResponse, error)
 }
@@ -175,6 +177,15 @@ func (c *imgSyncerClient) ListDriveNFSDir(ctx context.Context, in *ListDriveNFSD
 	return out, nil
 }
 
+func (c *imgSyncerClient) SetDriveS3(ctx context.Context, in *SetDriveS3Request, opts ...grpc.CallOption) (*SetDriveS3Response, error) {
+	out := new(SetDriveS3Response)
+	err := c.cc.Invoke(ctx, "/img_syncer.ImgSyncer/SetDriveS3", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *imgSyncerClient) Ping(ctx context.Context, in *PingRequest, opts ...grpc.CallOption) (*PingResponse, error) {
 	out := new(PingResponse)
 	err := c.cc.Invoke(ctx, "/img_syncer.ImgSyncer/Ping", in, out, opts...)
@@ -203,6 +214,8 @@ type ImgSyncerServer interface {
 	// NFS Drive
 	SetDriveNFS(context.Context, *SetDriveNFSRequest) (*SetDriveNFSResponse, error)
 	ListDriveNFSDir(context.Context, *ListDriveNFSDirRequest) (*ListDriveNFSDirResponse, error)
+	// S3 Drive
+	SetDriveS3(context.Context, *SetDriveS3Request) (*SetDriveS3Response, error)
 	// Ping
 	Ping(context.Context, *PingRequest) (*PingResponse, error)
 	mustEmbedUnimplementedImgSyncerServer()
@@ -247,6 +260,9 @@ func (UnimplementedImgSyncerServer) SetDriveNFS(context.Context, *SetDriveNFSReq
 }
 func (UnimplementedImgSyncerServer) ListDriveNFSDir(context.Context, *ListDriveNFSDirRequest) (*ListDriveNFSDirResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListDriveNFSDir not implemented")
+}
+func (UnimplementedImgSyncerServer) SetDriveS3(context.Context, *SetDriveS3Request) (*SetDriveS3Response, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SetDriveS3 not implemented")
 }
 func (UnimplementedImgSyncerServer) Ping(context.Context, *PingRequest) (*PingResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Ping not implemented")
@@ -488,6 +504,24 @@ func _ImgSyncer_ListDriveNFSDir_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ImgSyncer_SetDriveS3_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetDriveS3Request)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ImgSyncerServer).SetDriveS3(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/img_syncer.ImgSyncer/SetDriveS3",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ImgSyncerServer).SetDriveS3(ctx, req.(*SetDriveS3Request))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ImgSyncer_Ping_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(PingRequest)
 	if err := dec(in); err != nil {
@@ -556,6 +590,10 @@ var ImgSyncer_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListDriveNFSDir",
 			Handler:    _ImgSyncer_ListDriveNFSDir_Handler,
+		},
+		{
+			MethodName: "SetDriveS3",
+			Handler:    _ImgSyncer_SetDriveS3_Handler,
 		},
 		{
 			MethodName: "Ping",

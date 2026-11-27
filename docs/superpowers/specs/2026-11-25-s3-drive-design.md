@@ -50,17 +50,21 @@ SDK：aws-sdk-go-v2；目录语义：ListObjectsV2 delimiter + CommonPrefixes �
 | Bucket | string | 必填 |
 | PathStyle | bool | R2/OSS/COS/MinIO 通常需 true；AWS 官方可 false（virtual-host style） |
 | Root | string | 可选，空 = bucket 根；非空时所有 key 加 `root/` 前缀，用于共享 bucket 场景 |
+| Follow302 | bool | 默认 true；开启后下载走「预签名 URL → 302 Location → 直链」两步手动跟随（服务端如 OpenList 会返回 302 重定向直链）。对原始请求**不签 Range**，对直链**只带 Range、不带 Authorization**；每次续传重新取链接（直链有时效，不持久化） |
+| Force302Https | bool | 默认 false；开启后校验 302 Location 必须为 https，否则报错 |
 
 ### `server/drive/s3/s3.go`
 
 - `type S3 struct { cli *s3.Client, uploader *manager.Uploader, bucket, root string }`
-- 客户端构造：`config.LoadDefaultConfig` + `aws.String(ak/sk)` 静态凭证 + 自定义 `BaseEndpoint` + `UsePathStyle`；endpoint 为空时不设，走 AWS 默认。`root` 来自请求（可选，空 = bucket 根），key 拼接统一用 `path.Join`（勿用 `filepath.Join`，Windows 反斜杠会污染 S3 key）
-- `Upload(path, r, size, modtime)`：`manager.Uploader.Upload`（≥32MB 自动分片），读完后 `r.Close()`；modtime 无法设置到对象元数据之外，不额外写 metadata（保持与其他 drive 一致的最小行为）
-- `IsExist(path)`：HeadObject，404 → false
+- 客户端构造：`config.LoadDefaultConfig` + `aws.String(ak/sk)` 静态凭证 + 自定义 `BaseEndpoint` + `UsePathStyle`；endpoint 为空时不设，走 AWS 默认；只写了主机名（无 scheme）时补 `https://`（表单/配置恢复都可能传裸主机名）。`root` 来自请求（可选，空 = bucket 根），key 拼接统一用 `path.Join`（勿用 `filepath.Join`，Windows 反斜杠会污染 S3 key）
+- 连通探测：用 ListObjectsV2（MaxKeys=1）而非 HeadBucket——OpenList/gofakes3 类服务端不支持 HEAD（坑 5）
+- 下载（Follow302 开启时）：`offset > 0` 先用 SDK GetObject 带签名 Range 直达（标准 S3/R2/MinIO 支持，避免整文件重下）；该请求失败（OpenList 拒绝签名 Range，坑 4）才退回两步流程。两步流程：`s3.NewPresignClient` 预签名 GetObject（**不含 Range**），用 `http.Client`（`CheckRedirect: ErrUseLastResponse`）请求；200 → 直接返回流；302 → 取 `Location`（Force302Https 开启时校验 scheme 为 https）→ 对直链发 GET，**只带 `Range` 头**（有 offset 时），不带 Authorization/签名头，允许 CDN 再跳转；206 用 `Content-Range` 的总长，200 则本地丢弃前 offset 字节，416（offset 等于文件长度）返回空 body。Follow302 关闭时走 SDK GetObject 常规路径。HTTP 客户端只设 `ResponseHeaderTimeout`，不限流式 body 时长
+- `Upload(path, r, size, modtime)`：`manager.Uploader.Upload`（超 5MiB 自动分片，每片 5MiB，与 OpenList 指南建议一致），读完后 `r.Close()`；modtime 无法设置到对象元数据之外，不额外写 metadata（保持与其他 drive 一致的最小行为）。Follow302 开启时上传后用 list 核对对象存在且大小一致（OpenList 前的 WAF 可能吞掉 body 仍返回 200，坑 6）
+- `IsExist(path)`：Follow302 关闭时 HeadObject，404 → false；Follow302 开启时改用 `ListObjectsV2(Prefix=完整 key, MaxKeys=1)` 精确匹配（OpenList 的 head_object 返回 403，指南坑 5）
 - `Download(path)`：GetObject → (Body, ContentLength)
 - `DownloadWithOffset(path, offset)`：GetObject 带 `Range: bytes=offset-`
 - `Delete(path)`：DeleteObject（S3 删除即成功，无 NoSuchKey 报错语义）
-- `Range(dir, deal)`：ListObjectsV2 分页遍历 prefix=`root+dir`、delimiter=`/`；Contents 逐个构造 `fs.FileInfo`（name=去掉前缀后的 basename，size=Size，modtime=LastModified，isDir=false）回调；CommonPrefixes 同样回调为 isDir=true 的 FileInfo（RangeByDate 只对目录递归，需此形态）。deal 返回 false 时停止分页
+- `Range(dir, deal)`：ListObjectsV2 分页遍历 prefix=`root+dir`、delimiter=`/`；Contents 逐个构造 `fs.FileInfo`（name=去掉前缀后的 basename，size=Size，modtime=LastModified，isDir=false）回调；CommonPrefixes 同样回调为 isDir=true 的 FileInfo（RangeByDate 只对目录递归，需此形态）。排序需要全量数据，故先收集全部页再按 ModTime 降序排序（与 WebDAV 一致），然后逐个回调；deal 返回 false 时停止回调
 - `Close()`：无状态连接，返回 nil
 - 所有错误原样包装返回，不吞错
 
@@ -70,11 +74,11 @@ SDK：aws-sdk-go-v2；目录语义：ListObjectsV2 delimiter + CommonPrefixes �
 
 ### `server/api/s3.go`
 
-`SetDriveS3`：校验非空字段 → 构造 drive → `HeadBucket` 探测（60s 超时）→ 失败返回 `Success=false, Message=err` → `a.im.SetDrive(d)`。对齐 `webdav.go` 模式。
+`SetDriveS3`：校验非空字段 → 构造 drive → `Ping`（ListObjectsV2 MaxKeys=1，60s 超时）→ 失败返回 `Success=false, Message=err` → `a.im.SetDrive(d)`。对齐 `webdav.go` 模式。
 
 ### `lib/storageform/s3form.dart`
 
-表单字段同上表；`shared_preferences` 键：`s3_endpoint`, `s3_region`, `s3_access_key_id`, `s3_secret_access_key`, `s3_bucket`, `s3_path_style`, `s3_root`。pathStyle 用开关。提交调 gRPC `SetDriveS3`。在存储类型选择页注册新卡片（对齐 SMB/WebDAV/NFS 入口样式）。
+表单字段同上表；`shared_preferences` 键：`s3_endpoint`, `s3_region`, `s3_access_key_id`, `s3_secret_access_key`, `s3_bucket`, `s3_path_style`, `s3_root`, `s3_follow_302`, `s3_force_302_https`。pathStyle 用开关；「跟随302」开关（默认开）旁有小问号图标，点击弹提示：*部分服务端（如 openlist）会返回 302 重定向链接，开启此开关，将跟随 302 重定向*；开关开启时显示「强制验证302链接 https」checkbox（默认关）。提交调 gRPC `SetDriveS3`。在存储类型选择页注册新卡片（对齐 SMB/WebDAV/NFS 入口样式）。
 
 ### 测试
 
@@ -83,6 +87,7 @@ SDK：aws-sdk-go-v2；目录语义：ListObjectsV2 delimiter + CommonPrefixes �
 ## 风险
 
 - **凭证明文存 shared_preferences**：与现有 WebDAV/SMB 一致，是既有模式，不单独为 S3 加密存储（如需，应是全局特性）
+- **强制 https 默认关闭（按需求）**：未勾选时 302 可降级到明文直链；endpoint 填 `http://` 时预签名 URL 会明文上网，用户需自行判断是否可信
 - **S3 ListObjectsV2 每页 1000 条**：Range 全量遍历在大 bucket 上偏慢，与现有 `RangeByDate` 全量遍历的性能短板同级，不在本次解决
 - **aws-sdk-go-v2 依赖体积**：会增大 gomobile 产物体积，可接受
 

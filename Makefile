@@ -58,7 +58,8 @@ ipa:
 .PHONY: test
 test:
 	docker compose -f test/docker-compose.yml up -d --build --wait
-	go test -v ./server/api -p 1 -failfast
+	S3_TEST_ENDPOINT=http://localhost:9000 S3_TEST_AK=fregie S3_TEST_SK=password123 go test -v ./server/api -p 1 -failfast
 	go test -v ./server/drive -p 1 -failfast
+	S3_TEST_ENDPOINT=http://localhost:9000 S3_TEST_AK=fregie S3_TEST_SK=password123 go test -v ./server/drive/s3 -p 1 -failfast
 	docker compose -f test/docker-compose.yml down
 	

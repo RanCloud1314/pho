@@ -3,6 +3,7 @@ import 'package:img_syncer/design_tokens.dart';
 import 'package:img_syncer/storageform/smbform.dart';
 import 'package:img_syncer/storageform/webdavform.dart';
 import 'package:img_syncer/storageform/nfsform.dart';
+import 'package:img_syncer/storageform/s3form.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:img_syncer/state_model.dart';
 import 'package:img_syncer/global.dart';
@@ -69,6 +70,9 @@ class SettingStorageRouteBodyState extends State<SettingStorageRouteBody> {
         break;
       case Drive.nfs:
         form = const NFSForm();
+        break;
+      case Drive.s3:
+        form = const S3Form();
         break;
       default:
         form = const Text('Not implemented');
