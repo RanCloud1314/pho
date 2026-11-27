@@ -32,6 +32,9 @@ void main() {
       port = server.port;
       httpBaseUrl = 'http://127.0.0.1:$port';
       omitContentLength = false;
+      // 短路 checkServer 的 gRPC ping（测试环境 grpcPort 未初始化会抛
+      // LateInitializationError，见 ledger）
+      lastAliveTime = DateTime.now();
 
       server.listen((request) {
         final resp = request.response;
@@ -45,6 +48,7 @@ void main() {
     });
 
     tearDown(() async {
+      lastAliveTime = null;
       await server.close(force: true);
     });
 
@@ -240,6 +244,90 @@ void main() {
 
       // 第一次失败时 uploaded=50，第二次成功时 uploaded=100（不是 150）
       expect(uploadedAtEnd, [50, 100]);
+    });
+  });
+
+  group('RemoteImage.thumbnail 并发限流', () {
+    late HttpServer server;
+    int active = 0;
+    int maxActive = 0;
+
+    setUp(() async {
+      active = 0;
+      maxActive = 0;
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      httpBaseUrl = 'http://127.0.0.1:${server.port}';
+      lastAliveTime = DateTime.now();
+      server.listen((request) async {
+        active++;
+        if (active > maxActive) maxActive = active;
+        await Future.delayed(const Duration(milliseconds: 100));
+        active--;
+        final resp = request.response;
+        resp.statusCode = 200;
+        resp.headers.set('content-length', '4');
+        resp.add([1, 2, 3, 4]);
+        await resp.close();
+      });
+    });
+
+    tearDown(() async {
+      lastAliveTime = null;
+      await server.close(force: true);
+    });
+
+    test('20 个并发缩略图全部成功且同时在途 ≤6', () async {
+      final images = List.generate(
+          20,
+          (i) => RemoteImage(MockImgSyncerClient(), 'img$i.jpg',
+              size: 100, httpClient: http.Client()));
+      final results = await Future.wait(images.map((e) => e.thumbnail()));
+      expect(results.where((r) => r == null), isEmpty);
+      expect(maxActive, lessThanOrEqualTo(6));
+      expect(maxActive, greaterThan(1)); // 不能退化成全串行
+    });
+  });
+
+  group('RemoteImage.thumbnail 失败指数退避', () {
+    late HttpServer server;
+    final requestCount = <String, int>{};
+
+    setUp(() async {
+      requestCount.clear();
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      httpBaseUrl = 'http://127.0.0.1:${server.port}';
+      lastAliveTime = DateTime.now();
+      server.listen((request) {
+        final path = request.uri.path;
+        final n = (requestCount[path] ?? 0) + 1;
+        requestCount[path] = n;
+        final resp = request.response;
+        if (n <= 2) {
+          resp.statusCode = 500;
+          resp.close();
+          return;
+        }
+        resp.statusCode = 200;
+        resp.headers.set('content-length', '4');
+        resp.add([1, 2, 3, 4]);
+        resp.close();
+      });
+    });
+
+    tearDown(() async {
+      lastAliveTime = null;
+      await server.close(force: true);
+    });
+
+    test('失败两次后第三次成功，退避 ≥300ms', () async {
+      final image = RemoteImage(MockImgSyncerClient(), 'retry.jpg',
+          size: 100, httpClient: http.Client());
+      final sw = Stopwatch()..start();
+      final result = await image.thumbnail();
+      sw.stop();
+      expect(result, isNotNull);
+      expect(requestCount['/thumbnail/retry.jpg'], 3);
+      expect(sw.elapsedMilliseconds, greaterThanOrEqualTo(290)); // 100+200ms 退避
     });
   });
 }

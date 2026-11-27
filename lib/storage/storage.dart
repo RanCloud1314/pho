@@ -10,6 +10,7 @@ import 'package:path/path.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:img_syncer/global.dart';
 import 'package:http/http.dart' as http;
+import 'package:async_locks/async_locks.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:img_syncer/util.dart';
@@ -319,6 +320,10 @@ class RemoteImage {
   /// 共享 HTTP 客户端，复用连接减少 TCP 握手开销
   late http.Client httpClient;
 
+  /// 远程缩略图全局并发上限：冷启动窗口预加载 + 刷新轮次叠加曾把
+  /// S3 打出 214 个并发 GET（spec: 冷启动优化）
+  static final Semaphore _thumbnailSemaphore = Semaphore(6);
+
   RemoteImage(
     this.cli,
     this.path, {
@@ -366,12 +371,18 @@ class RemoteImage {
     int retryCount = 0;
     while (retryCount < maxRetries) {
       try {
-        var currentData = BytesBuilder();
-        var dataStream = thumbnailStream();
-        await for (var d in dataStream) {
-          currentData.add(d);
+        await _thumbnailSemaphore.acquire();
+        Uint8List bytes;
+        try {
+          final currentData = BytesBuilder();
+          final dataStream = thumbnailStream();
+          await for (var d in dataStream) {
+            currentData.add(d);
+          }
+          bytes = currentData.takeBytes();
+        } finally {
+          _thumbnailSemaphore.release();
         }
-        final bytes = currentData.takeBytes();
         if (bytes.isEmpty) {
           throw Exception("empty thumbnail");
         }
@@ -379,8 +390,9 @@ class RemoteImage {
         return bytes;
       } catch (e) {
         logger.addLog("get $path thumbnail failed: $e");
+        // 指数退避：100/200/400ms
+        await Future.delayed(Duration(milliseconds: 100 << retryCount));
         retryCount++;
-        await Future.delayed(const Duration(milliseconds: 100));
       }
     }
     // 失败不写入缓存，交给调用方重试（issue #89）
