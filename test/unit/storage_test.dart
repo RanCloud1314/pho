@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:img_syncer/storage/storage.dart';
+import 'package:img_syncer/storage/thumbnail_cache.dart';
 import 'package:img_syncer/proto/img_syncer.pbgrpc.dart';
 import 'package:img_syncer/global.dart';
 import 'package:http/http.dart' as http;
@@ -328,6 +330,74 @@ void main() {
       expect(result, isNotNull);
       expect(requestCount['/thumbnail/retry.jpg'], 3);
       expect(sw.elapsedMilliseconds, greaterThanOrEqualTo(290)); // 100+200ms 退避
+    });
+  });
+
+  group('RemoteImage.thumbnail 磁盘缓存', () {
+    late HttpServer server;
+    final requestCount = <String, int>{};
+    late Future<ThumbnailCache?> Function() origLoader;
+    late Directory tmp;
+    // 组级可切换的响应体；默认为真实可解码图片（仓库现有 Go 测试夹具）
+    late Uint8List responseBody;
+    final pic = File('test/static/test_pic_01.jpg').readAsBytesSync();
+
+    setUp(() async {
+      responseBody = pic;
+      origLoader = thumbnailCacheLoader;
+      tmp = Directory.systemTemp.createTempSync('thumb_inject');
+      thumbnailCacheLoader = () async => ThumbnailCache(tmp);
+      requestCount.clear();
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      httpBaseUrl = 'http://127.0.0.1:${server.port}';
+      lastAliveTime = DateTime.now();
+      server.listen((request) {
+        final path = request.uri.path;
+        requestCount[path] = (requestCount[path] ?? 0) + 1;
+        final resp = request.response;
+        resp.statusCode = 200;
+        resp.headers.set('content-length', '${responseBody.length}');
+        resp.add(responseBody);
+        resp.close();
+      });
+    });
+
+    tearDown(() async {
+      thumbnailCacheLoader = origLoader;
+      lastAliveTime = null;
+      await server.close(force: true);
+      tmp.deleteSync(recursive: true);
+    });
+
+    test('新实例命中缓存不再走网络（刷新轮次同理）', () async {
+      final img1 = RemoteImage(MockImgSyncerClient(), 'a.jpg',
+          size: 10, httpClient: http.Client());
+      final r1 = await img1.thumbnail();
+      // 落盘是 unawaited 的异步写：先冲刷事件队列等写盘完成（真实场景是稍后访问）
+      await pumpEventQueue();
+      // refreshRemote 会重建实例，内存缓存清零——模拟新实例
+      final img2 = RemoteImage(MockImgSyncerClient(), 'a.jpg',
+          size: 10, httpClient: http.Client());
+      final r2 = await img2.thumbnail();
+      expect(requestCount['/thumbnail/a.jpg'], 1);
+      expect(r2, r1);
+    });
+
+    test('不可解码字节不落缓存（防毒化）', () async {
+      responseBody = Uint8List.fromList(utf8.encode('not an image'));
+      final img1 = RemoteImage(MockImgSyncerClient(), 'b.jpg',
+          size: 10, httpClient: http.Client());
+      await img1.thumbnail();
+      final img2 = RemoteImage(MockImgSyncerClient(), 'b.jpg',
+          size: 10, httpClient: http.Client());
+      await img2.thumbnail();
+      expect(requestCount['/thumbnail/b.jpg'], 2); // 无缓存，仍走网络
+    });
+
+    test('默认 loader 在无 path_provider 环境降级为 null', () async {
+      // origLoader 是 setUp 里保存的默认实现；flutter test 环境
+      // getApplicationSupportDirectory 抛 MissingPluginException → 应返回 null
+      expect(await origLoader(), isNull);
     });
   });
 }

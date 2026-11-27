@@ -11,6 +11,8 @@ import 'package:photo_manager/photo_manager.dart';
 import 'package:img_syncer/global.dart';
 import 'package:http/http.dart' as http;
 import 'package:async_locks/async_locks.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:img_syncer/storage/thumbnail_cache.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:img_syncer/util.dart';
@@ -29,6 +31,17 @@ String encryptionTypeName(EncryptionType type) {
 }
 
 RemoteStorage storage = RemoteStorage("127.0.0.1", 10000);
+
+/// 可注入的缩略图缓存 loader；path_provider 不可用（测试环境）时返回 null 禁用缓存。
+Future<ThumbnailCache?> Function() thumbnailCacheLoader = _defaultThumbnailCache;
+Future<ThumbnailCache?> _defaultThumbnailCache() async {
+  try {
+    final dir = await getApplicationSupportDirectory();
+    return ThumbnailCache(Directory('${dir.path}/thumbnails'));
+  } catch (_) {
+    return null;
+  }
+}
 
 /// 上传完成后是否删除本地源文件：仅 iOS 且上传成功时删除。
 /// 原 finally 块无条件删除，同步失败时源文件会丢失（issue #83/#82）。
@@ -367,6 +380,13 @@ class RemoteImage {
     if (thumbnailData != null) {
       return thumbnailData;
     }
+    // 磁盘缓存：命中不走网络、不占信号量（刷新重建实例后的二次拉取也在此命中）
+    final cache = await thumbnailCacheLoader();
+    final cached = await cache?.read(path, size);
+    if (cached != null) {
+      thumbnailData = cached;
+      return cached;
+    }
     int maxRetries = 3;
     int retryCount = 0;
     while (retryCount < maxRetries) {
@@ -387,6 +407,10 @@ class RemoteImage {
           throw Exception("empty thumbnail");
         }
         thumbnailData = bytes;
+        // 能解码成图片才落盘：防非法字节毒化磁盘缓存（issue #89 同思路）
+        if (cache != null && await isValidImage(bytes)) {
+          unawaited(cache.write(path, size, bytes));
+        }
         return bytes;
       } catch (e) {
         logger.addLog("get $path thumbnail failed: $e");

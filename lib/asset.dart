@@ -665,14 +665,7 @@ class Asset extends ImageProvider<Asset> {
   String toString() => 'Asset(local: $local, remote: $remote)';
 }
 
-Future<bool> isValidImage(Uint8List imageData) async {
-  try {
-    final ui.Codec codec = await ui.instantiateImageCodec(imageData);
-    return codec != null;
-  } catch (e) {
-    return false;
-  }
-}
+// isValidImage 已移至 util.dart（storage.dart 共用）
 
 Future<ImageInfo> loadImage(String path) async {
   final Completer<ImageInfo> completer = Completer();

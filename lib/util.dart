@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/services.dart';
 import 'package:img_syncer/logger/logger.dart';
@@ -125,5 +126,16 @@ Future<void> keepScreenOn(bool on) async {
     }
   } catch (e) {
     logger.addLog("keepScreenOn($on) failed: $e");
+  }
+}
+
+/// 字节能否解码成图片；缓存落盘/缩略图有效性校验用（自 asset.dart 移入，
+/// storage.dart 与 asset.dart 共用而两者有循环依赖）
+Future<bool> isValidImage(Uint8List imageData) async {
+  try {
+    final ui.Codec codec = await ui.instantiateImageCodec(imageData);
+    return codec != null;
+  } catch (e) {
+    return false;
   }
 }
