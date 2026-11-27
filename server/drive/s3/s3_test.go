@@ -348,3 +348,39 @@ func TestFollow302ChunkedDirectLink(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "Content-Length")
 }
+
+// web_proxy 中转：预签名 GET 直接 200 分块（无 Content-Length），list 仍可用——用 list 探测真实大小
+func TestWebProxyChunkedRelay(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("list-type") == "2" { // ListObjectsV2
+			fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult><Contents><Key>a.jpg</Key><Size>%d</Size></Contents></ListBucketResult>`, len(static.Pic1))
+			return
+		}
+		if r.Header.Get("Range") != "" { // 坑 4：OpenList 拒绝带 Range 的签名请求
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, "<Error><Code>AccessDenied</Code></Error>")
+			return
+		}
+		w.WriteHeader(http.StatusOK) // 中转：200 分块，无 Content-Length
+		w.Write(static.Pic1)
+	}))
+	defer srv.Close()
+
+	d, err := NewS3(srv.URL, "us-east-1", "ak", "sk", "bucket", "", true, true, false)
+	require.NoError(t, err)
+
+	rc, size, err := d.Download("a.jpg")
+	require.NoError(t, err)
+	b, _ := io.ReadAll(rc)
+	rc.Close()
+	require.Equal(t, static.Pic1, b)
+	require.Equal(t, int64(len(static.Pic1)), size)
+
+	rc, size, err = d.DownloadWithOffset("a.jpg", 5)
+	require.NoError(t, err)
+	b, _ = io.ReadAll(rc)
+	rc.Close()
+	require.Equal(t, static.Pic1[5:], b)
+	require.Equal(t, int64(len(static.Pic1)), size)
+}

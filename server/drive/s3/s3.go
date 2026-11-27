@@ -223,7 +223,7 @@ func (d *S3) downloadFollow302(ctx context.Context, p string, offset int64) (io.
 
 	switch rsp.StatusCode {
 	case http.StatusOK: // 服务端开了 web_proxy，直接中转
-		return d.offsetBody(rsp, offset)
+		return d.offsetBody(ctx, p, rsp, offset)
 	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
 	default:
 		rsp.Body.Close()
@@ -267,11 +267,11 @@ func (d *S3) downloadFollow302(ctx context.Context, p string, offset int64) (io.
 		rsp2.Body.Close()
 		return nil, 0, fmt.Errorf("s3 direct download %s: unexpected status %d", p, rsp2.StatusCode)
 	}
-	return d.offsetBody(rsp2, offset)
+	return d.offsetBody(ctx, p, rsp2, offset)
 }
 
 // offsetBody 返回响应流与总大小；服务端忽略 Range 时本地丢弃前 offset 字节
-func (d *S3) offsetBody(rsp *http.Response, offset int64) (io.ReadCloser, int64, error) {
+func (d *S3) offsetBody(ctx context.Context, p string, rsp *http.Response, offset int64) (io.ReadCloser, int64, error) {
 	length := rsp.ContentLength
 	if rsp.StatusCode == http.StatusPartialContent {
 		if total, ok := parseTotal(rsp.Header.Get("Content-Range")); ok {
@@ -286,8 +286,12 @@ func (d *S3) offsetBody(rsp *http.Response, offset int64) (io.ReadCloser, int64,
 		}
 	}
 	if length < 0 {
-		// 上游 http.go 会把 size 直接写进 Content-Length，-1 会毁掉响应
-		// shortcut: 无 Content-Length 的分块直链直接报错，等真遇到这类服务端再改成流式透传
+		// OpenList 开 web_proxy 后中转响应是分块的、无 Content-Length（上游会把 size 直接写进响应头，-1 会毁掉响应）；
+		// 它的 list 仍可用，用 list 探测真实大小补齐
+		if ok, size, err := d.probe(ctx, d.key(p)); err == nil && ok {
+			return rsp.Body, size, nil
+		}
+		// shortcut: list 也不可用时（如无 list 的直链 CDN）仍报错，等遇到这类服务端再改成流式透传
 		rsp.Body.Close()
 		return nil, 0, fmt.Errorf("s3 download: response has no Content-Length")
 	}
