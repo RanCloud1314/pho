@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:img_syncer/global.dart';
 import 'package:img_syncer/proto/img_syncer.pbgrpc.dart';
 import 'package:img_syncer/state_model.dart';
+import 'package:img_syncer/storage/storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// 创建一个模拟响应流，用于测试 receiveResponses。
@@ -11,7 +13,49 @@ Stream<T> _mockResponseStream<T>(List<T> items) async* {
   }
 }
 
+class _PagedStorage extends RemoteStorage {
+  _PagedStorage() : super('127.0.0.1', 10000);
+
+  final requests = <List<int>>[];
+
+  @override
+  Future<List<RemoteImage>> listImages(
+      String date, int offset, dynamic maxReturn) async {
+    requests.add([offset, maxReturn as int]);
+    return List.generate(
+      offset == 0 ? maxReturn : 2,
+      (i) => RemoteImage(cli, '20261127/${offset + i}.jpg',
+          httpClient: httpClient),
+    );
+  }
+}
+
 void main() {
+  test('云端相册先显示首批 48 张，再按完整页大小请求', () async {
+    final originalStorage = storageClient;
+    final originalUseRemoteServer = useRemoteServer;
+    final remote = _PagedStorage();
+    final model = AssetModel();
+    addTearDown(() {
+      setStorageForTest(originalStorage);
+      useRemoteServer = originalUseRemoteServer;
+      remote.httpClient.close();
+      model.dispose();
+    });
+    setStorageForTest(remote);
+    useRemoteServer = true;
+    final visibleCounts = <int>[];
+    model.addListener(() => visibleCounts.add(model.remoteAssets.length));
+
+    expect(await model.getRemotePhotos(), isTrue);
+    expect(remote.requests, [
+      [0, 48],
+      [48, model.pageSize],
+    ]);
+    expect(visibleCounts, contains(48));
+    expect(model.remoteAssets.length, 50);
+  });
+
   group('receiveResponses 两阶段提交', () {
     late StateModel state;
 

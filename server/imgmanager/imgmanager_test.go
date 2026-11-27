@@ -1,6 +1,9 @@
 package imgmanager
 
 import (
+	"io/fs"
+	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -161,6 +164,55 @@ func TestRangeByDate_IncludesRequestedDay(t *testing.T) {
 	if len(paths) != 2 {
 		t.Fatalf("expected 2 files, got %d: %v", len(paths), paths)
 	}
+}
+
+func TestRangeByDateStopsBeforeListingOlderMonths(t *testing.T) {
+	im := NewImgManager(Option{WorkerNum: 1})
+	defer im.Close()
+	md := &listingDrive{mockDrive: newMockDrive()}
+	im.dri = md
+	md.rangeFiles["."] = []mockDirEntry{
+		{name: "2025", isDir: true},
+		{name: "2026", isDir: true},
+		{name: "20261125", isDir: true},
+	}
+	md.rangeFiles["2026"] = []mockDirEntry{
+		{name: "10", isDir: true},
+		{name: "11", isDir: true},
+	}
+	november := filepath.Join("2026", "11")
+	md.rangeFiles[november] = []mockDirEntry{
+		{name: "24", isDir: true},
+		{name: "26", isDir: true},
+		{name: "28", isDir: true},
+	}
+	newest := filepath.Join(november, "26")
+	md.rangeFiles[newest] = []mockDirEntry{{name: "new.jpg"}}
+	md.rangeFiles["20261125"] = []mockDirEntry{{name: "flat.jpg"}}
+	var photos []string
+	err := im.RangeByDate(time.Date(2026, 11, 27, 0, 0, 0, 0, time.Local), func(info ImgInfo) bool {
+		photos = append(photos, info.Path)
+		return len(photos) < 2
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{filepath.Join(newest, "new.jpg"), filepath.Join("20261125", "flat.jpg")}; !slices.Equal(photos, want) {
+		t.Fatalf("photos = %v, want %v", photos, want)
+	}
+	if want := []string{".", "2026", november, newest, "20261125"}; !slices.Equal(md.listed, want) {
+		t.Fatalf("listed = %v, want %v", md.listed, want)
+	}
+}
+
+type listingDrive struct {
+	*mockDrive
+	listed []string
+}
+
+func (d *listingDrive) Range(dir string, deal func(fs.FileInfo) bool) error {
+	d.listed = append(d.listed, dir)
+	return d.mockDrive.Range(dir, deal)
 }
 
 // TestImgManagerCloseStopsWorkers 验证 Close() 能优雅停止 worker goroutine

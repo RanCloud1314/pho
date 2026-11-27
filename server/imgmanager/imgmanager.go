@@ -135,7 +135,6 @@ func (im *ImgManager) runWorker() {
 	}
 }
 
-
 type Options struct {
 	EncyptOption EncryptOption
 	IsLivePhoto  bool
@@ -634,8 +633,9 @@ func (im *ImgManager) DeleteImg(paths []string) {
 }
 
 type dirInfo struct {
-	date time.Time
-	dir  string
+	date   time.Time
+	dir    string
+	levels int
 }
 
 type ImgInfo struct {
@@ -647,125 +647,112 @@ type ImgInfo struct {
 func (im *ImgManager) RangeByDate(date time.Time, f func(info ImgInfo) bool) error {
 	d, unlock := im.drive()
 	defer unlock()
-	t := date
-	if t.IsZero() {
-		t = time.Now()
+	if date.IsZero() {
+		date = time.Now()
 	}
-	year, month, day := t.Date()
-	dirInfos := make([]dirInfo, 0)
-	yDir, err := im.listDir(d, ".")
+	location := date.Location()
+	root, err := im.listDir(d, ".")
 	if err != nil {
 		im.logger.Println("Error listing year dir:", err)
 		return err
 	}
-	// sort.Sort(desc(yDir))
-	// type 02
-	for _, yinfo := range yDir {
-		if len(yinfo.Name()) == 8 {
-			dirDate, err := time.Parse("20060102", yinfo.Name())
-			if err != nil {
-				im.logger.Printf("Error parsing date: %s, %s", yinfo.Name(), err)
-				continue
+
+	var pending []dirInfo
+	for _, info := range root {
+		if !info.IsDir() {
+			continue
+		}
+		name := info.Name()
+		switch len(name) {
+		case 8:
+			day, err := time.ParseInLocation("20060102", name, location)
+			if err == nil && !day.After(date) {
+				pending = append(pending, dirInfo{date: day, dir: name})
 			}
-			if !dirDate.After(date) {
-				dirInfos = append(dirInfos, dirInfo{
-					date: dirDate,
-					dir:  yinfo.Name(),
+		case 4:
+			year, err := strconv.Atoi(name)
+			if err == nil && year > 0 && year <= date.Year() {
+				pending = append(pending, dirInfo{
+					date: time.Date(year, time.December, 31, 0, 0, 0, 0, location),
+					dir:  name, levels: 2,
 				})
 			}
 		}
 	}
-	// type 01
-	for _, yinfo := range yDir {
-		if yinfo.Name() == "live" {
-			continue
-		}
-		if !yinfo.IsDir() {
-			continue
-		}
-		if len(yinfo.Name()) != 4 {
-			continue
-		}
-		yNum, err := strconv.Atoi(yinfo.Name())
-		if err != nil {
-			continue
-		}
-		if yNum > year {
-			continue
-		}
-		mDir, err := im.listDir(d, filepath.Base(yinfo.Name()))
-		if err != nil {
-			im.logger.Println("Error listing month dir:", err)
-			continue
-		}
-		// sort.Sort(desc(mDir))
-		for _, minfo := range mDir {
-			if minfo.Name() == "live" {
-				continue
-			}
-			if !minfo.IsDir() {
-				continue
-			}
-			mNum, err := strconv.Atoi(minfo.Name())
-			if err != nil {
-				continue
-			}
-			if yNum == year && mNum > int(month) {
-				continue
-			}
-			dDir, err := im.listDir(d, filepath.Join(yinfo.Name(), minfo.Name()))
-			if err != nil {
-				im.logger.Println("Error listing day dir:", err)
-				continue
-			}
-			// sort.Sort(desc(dDir))
-			for _, dinfo := range dDir {
-				if !dinfo.IsDir() {
-					continue
-				}
-				dNum, err := strconv.Atoi(dinfo.Name())
-				if err != nil {
-					continue
-				}
-				if yNum == year && mNum == int(month) && dNum > day {
-					continue
-				}
-				dirPath := filepath.Join(yinfo.Name(), minfo.Name(), dinfo.Name())
-				dirDate := time.Date(yNum, time.Month(mNum), dNum, 0, 0, 0, 0, time.Local)
-				if !dirDate.After(date) {
-					dirInfos = append(dirInfos, dirInfo{
-						date: dirDate,
-						dir:  dirPath,
-					})
-				}
-			}
-		}
-	}
 
-	sort.Sort(dirDesc(dirInfos))
-	for _, dirInfo := range dirInfos {
+	// 年、月先按其最晚可能的日期排序，只展开当前页需要访问的目录。
+	sortPending := func() {
+		sort.Slice(pending, func(i, j int) bool {
+			if pending[i].date.Equal(pending[j].date) {
+				if pending[i].levels != pending[j].levels {
+					return pending[i].levels < pending[j].levels
+				}
+				return pending[i].dir > pending[j].dir
+			}
+			return pending[i].date.Before(pending[j].date)
+		})
+	}
+	sortPending()
+	for len(pending) > 0 {
+		last := len(pending) - 1
+		current := pending[last]
+		pending = pending[:last]
+		if current.levels > 0 {
+			children, err := im.listDir(d, current.dir)
+			if err != nil {
+				im.logger.Printf("Error listing date dir %s: %s", current.dir, err)
+				continue
+			}
+			for _, child := range children {
+				number, err := strconv.Atoi(child.Name())
+				if !child.IsDir() || err != nil || number < 1 {
+					continue
+				}
+				var day time.Time
+				year, month, lastDay := current.date.Date()
+				if current.levels == 2 {
+					if number > 12 {
+						continue
+					}
+					day = time.Date(year, time.Month(number)+1, 0, 0, 0, 0, 0, location)
+					if year == date.Year() && day.Month() > date.Month() {
+						continue
+					}
+				} else {
+					if number > lastDay {
+						continue
+					}
+					day = time.Date(year, month, number, 0, 0, 0, 0, location)
+					if day.After(date) {
+						continue
+					}
+				}
+				pending = append(pending, dirInfo{
+					date: day, dir: filepath.Join(current.dir, child.Name()), levels: current.levels - 1,
+				})
+			}
+			sortPending()
+			continue
+		}
+
 		goOn := true
-		d.Range(dirInfo.dir, func(info fs.FileInfo) bool {
+		d.Range(current.dir, func(info fs.FileInfo) bool {
+			path := filepath.Join(current.dir, info.Name())
 			if info.IsDir() {
 				if strings.HasPrefix(info.Name(), "live_") {
-					d.Range(filepath.Join(dirInfo.dir, info.Name()), func(info2 fs.FileInfo) bool {
+					d.Range(path, func(info2 fs.FileInfo) bool {
 						if !util.IsVideo(info2.Name()) {
 							goOn = f(ImgInfo{
-								Path:        filepath.Join(dirInfo.dir, info.Name(), info2.Name()),
-								Size:        info2.Size(),
-								IsLivePhoto: true,
+								Path: filepath.Join(path, info2.Name()),
+								Size: info2.Size(), IsLivePhoto: true,
 							})
 						}
-						return true
+						return goOn
 					})
 				}
 				return goOn
 			}
-			goOn = f(ImgInfo{
-				Path:        filepath.Join(dirInfo.dir, info.Name()),
-				Size:        info.Size(),
-				IsLivePhoto: false,
-			})
+			goOn = f(ImgInfo{Path: path, Size: info.Size()})
 			return goOn
 		})
 		if !goOn {
@@ -774,7 +761,6 @@ func (im *ImgManager) RangeByDate(date time.Time, f func(info ImgInfo) bool) err
 	}
 	return nil
 }
-
 func (im *ImgManager) listDir(d StorageDrive, path string) ([]fs.FileInfo, error) {
 	infos := make([]fs.FileInfo, 0)
 	err := d.Range(path, func(info fs.FileInfo) bool {
@@ -782,44 +768,4 @@ func (im *ImgManager) listDir(d StorageDrive, path string) ([]fs.FileInfo, error
 		return true
 	})
 	return infos, err
-}
-
-// type asc []fs.FileInfo
-
-// func (a asc) Len() int      { return len(a) }
-// func (a asc) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
-// func (a asc) Less(i, j int) bool {
-// 	yi, err := strconv.Atoi(a[i].Name())
-// 	if err != nil {
-// 		return false
-// 	}
-// 	yj, err := strconv.Atoi(a[j].Name())
-// 	if err != nil {
-// 		return true
-// 	}
-// 	return yi < yj
-// }
-
-type desc []fs.FileInfo
-
-func (d desc) Len() int      { return len(d) }
-func (d desc) Swap(i, j int) { d[i], d[j] = d[j], d[i] }
-func (d desc) Less(i, j int) bool {
-	yi, err := strconv.Atoi(d[i].Name())
-	if err != nil {
-		return false
-	}
-	yj, err := strconv.Atoi(d[j].Name())
-	if err != nil {
-		return true
-	}
-	return yi > yj
-}
-
-type dirDesc []dirInfo
-
-func (d dirDesc) Len() int      { return len(d) }
-func (d dirDesc) Swap(i, j int) { d[i], d[j] = d[j], d[i] }
-func (d dirDesc) Less(i, j int) bool {
-	return d[i].date.After(d[j].date)
 }

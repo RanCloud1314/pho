@@ -1,6 +1,11 @@
+import 'dart:async';
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
+import 'package:img_syncer/asset.dart';
+import 'package:img_syncer/storage/storage.dart';
 import 'package:img_syncer/state_model.dart';
 import 'package:img_syncer/gallery_viewer_route.dart';
 import 'package:img_syncer/l10n/app_localizations.dart';
@@ -56,7 +61,8 @@ class _ListenerTestWidgetState extends State<_ListenerTestWidget> {
   Widget build(BuildContext context) => const SizedBox.shrink();
 }
 
-Widget buildTestWidget(CountingAssetModel model) {
+Widget buildTestWidget(CountingAssetModel model,
+    {Widget home = const _ListenerTestWidget()}) {
   return MultiProvider(
     providers: [
       ChangeNotifierProvider<AssetModel>.value(value: model),
@@ -69,17 +75,60 @@ Widget buildTestWidget(CountingAssetModel model) {
       home: Builder(
         builder: (context) {
           global.initI18n(context);
-          return const _ListenerTestWidget();
+          return home;
         },
       ),
     ),
   );
 }
 
+class _PendingRemotePhoto extends Asset {
+  _PendingRemotePhoto()
+      : super(
+          remote: RemoteImage(storage.cli, '20261127/photo.jpg',
+              httpClient: storage.httpClient),
+        );
+
+  final frame = Completer<ImageInfo>();
+
+  @override
+  Future<void> readInfoFromData() async {}
+
+  @override
+  ImageStreamCompleter loadImage(Asset key, ImageDecoderCallback decode) =>
+      OneFrameImageStreamCompleter(frame.future);
+}
+
 void main() {
+  testWidgets('原图首帧显示前保留加载指示', (tester) async {
+    final model = CountingAssetModel();
+    final photo = _PendingRemotePhoto();
+    model.remoteAssets = [photo];
+    await tester.pumpWidget(buildTestWidget(
+      model,
+      home: const GalleryViewerRoute(useLocal: false, originIndex: 0),
+    ));
+    final progress = find.byType(LinearProgressIndicator);
+    photo.imageLoadProgress.value = 0.5;
+    await tester.pump();
+    expect(tester.widget<LinearProgressIndicator>(progress).value, 0.5);
+
+    photo.imageLoadProgress.value = 1;
+    await tester.pump();
+    expect(tester.widget<LinearProgressIndicator>(progress).value, isNull);
+
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    canvas.drawColor(Colors.white, BlendMode.src);
+    final picture = recorder.endRecording();
+    photo.frame.complete(ImageInfo(image: picture.toImageSync(1, 1)));
+    picture.dispose();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(progress, findsNothing);
+  });
+
   group('GalleryViewerRoute listener 生命周期', () {
-    testWidgets('TestListenerCleanupOnDispose - 挂载注册监听，卸载时移除',
-        (tester) async {
+    testWidgets('TestListenerCleanupOnDispose - 挂载注册监听，卸载时移除', (tester) async {
       final model = CountingAssetModel();
 
       await tester.pumpWidget(buildTestWidget(model));
@@ -97,8 +146,7 @@ void main() {
       expect(model.addCount, model.removeCount);
     });
 
-    testWidgets('TestMultipleMountUnmount - 多次挂载/卸载不累积泄漏',
-        (tester) async {
+    testWidgets('TestMultipleMountUnmount - 多次挂载/卸载不累积泄漏', (tester) async {
       for (int i = 0; i < 3; i++) {
         final model = CountingAssetModel();
 

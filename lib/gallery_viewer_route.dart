@@ -603,9 +603,39 @@ class GalleryViewerRouteState extends State<GalleryViewerRoute>
                         loadStateChanged: (ExtendedImageState state) {
                           switch (state.extendedImageLoadState) {
                             case LoadState.loading:
-                              return ExtendedImage(
+                              final thumbnail = ExtendedImage(
                                 image: all[index].thumbnailProvider(),
                                 fit: BoxFit.contain,
+                              );
+                              if (!all[index].hasRemote || all[index].isVideo()) {
+                                return thumbnail;
+                              }
+                              return Stack(
+                                fit: StackFit.expand,
+                                children: [
+                                  thumbnail,
+                                  Positioned(
+                                    top: MediaQuery.paddingOf(context).top,
+                                    left: 0,
+                                    right: 0,
+                                    child: ValueListenableBuilder<double>(
+                                      valueListenable:
+                                          all[index].imageLoadProgress,
+                                      builder: (context, progress, child) {
+                                        return LinearProgressIndicator(
+                                          value: progress > 0 && progress < 1
+                                              ? progress
+                                              : null,
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .primary
+                                              .withValues(alpha: 0.7),
+                                          backgroundColor: Colors.transparent,
+                                        );
+                                      },
+                                    ),
+                                  ),
+                                ],
                               );
                             case LoadState.completed:
                               return null; // Use the high-resolution image.
@@ -730,26 +760,6 @@ class GalleryViewerRouteState extends State<GalleryViewerRoute>
                           }
                         },
                       ),
-                      Positioned(
-                          top: MediaQuery.of(context).padding.top,
-                          left: 0,
-                          width: MediaQuery.of(context).size.width,
-                          child: ValueListenableBuilder<double>(
-                            valueListenable: all[index].imageLoadProgress,
-                            builder: (context, progress, child) {
-                              if (progress > 0 && progress < 1) {
-                                return LinearProgressIndicator(
-                                  value: progress,
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .primary
-                                      .withOpacity(0.7),
-                                  backgroundColor: Colors.transparent,
-                                );
-                              }
-                              return Container();
-                            },
-                          )),
                       Center(
                         child: Consumer<StateModel>(
                           builder: (context, model, child) {

@@ -1,6 +1,7 @@
 // ignore_for_file: deprecated_member_use
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'package:date_format/date_format.dart';
 import 'package:grpc/grpc.dart';
 import 'package:flutter/material.dart';
@@ -556,9 +557,10 @@ class AssetModel extends ChangeNotifier {
           return false;
         }
         final offset = remoteAssets.length;
+        final limit = offset == 0 ? min(pageSize, 48) : pageSize;
         final List<RemoteImage> images =
-            await storageClient.listImages("", offset, pageSize);
-        if (images.length < pageSize) {
+            await storageClient.listImages("", offset, limit);
+        if (images.length < limit) {
           remoteHasMore = false;
         }
         for (var i = 0; i < images.length; i++) {

@@ -485,10 +485,10 @@ class Asset extends ImageProvider<Asset> {
       img.Decoder? decoder = img.findDecoderForNamedImage(await originName());
       decoder ??= img.findDecoderForData(data);
       if (decoder != null) {
-        compute(decoder.decode, data).then((image) {
-          if (image != null) {
-            imageWidth = image.width;
-            imageHeight = image.height;
+        compute(decoder.startDecode, data).then((info) {
+          if (info != null) {
+            imageWidth = info.width;
+            imageHeight = info.height;
           }
           _isSizeInfoReadedFinished = true;
         }, onError: (e) {
