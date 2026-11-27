@@ -49,4 +49,5 @@ debug-info
 ios/Frameworks/RUN.xcframework
 android/app/libs/server.aarserver/server
 test/results/
-*.aar.superpowers/
+*.aar
+.superpowers/
