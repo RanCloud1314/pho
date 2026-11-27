@@ -38,5 +38,12 @@ void main() {
     test('未写过返回 null', () async {
       expect(await ThumbnailCache(tmp).read('none.jpg', 1), isNull);
     });
+    test('覆写完全替换旧内容且无 .tmp 残留', () async {
+      final c = ThumbnailCache(tmp);
+      await c.write('a.jpg', 1, Uint8List.fromList([1, 2]));
+      await c.write('a.jpg', 1, Uint8List.fromList([3, 4, 5]));
+      expect(await c.read('a.jpg', 1), [3, 4, 5]);
+      expect(tmp.listSync().whereType<File>().map((f) => f.path).where((p) => p.endsWith('.tmp')), isEmpty);
+    });
   });
 }

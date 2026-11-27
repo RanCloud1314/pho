@@ -366,6 +366,8 @@ void main() {
       thumbnailCacheLoader = origLoader;
       lastAliveTime = null;
       await server.close(force: true);
+      // 等 unawaited 的 tmp+rename 落盘收敛，避免删临时目录撞文件占用
+      await Future.delayed(const Duration(milliseconds: 300));
       tmp.deleteSync(recursive: true);
     });
 
@@ -373,8 +375,9 @@ void main() {
       final img1 = RemoteImage(MockImgSyncerClient(), 'a.jpg',
           size: 10, httpClient: http.Client());
       final r1 = await img1.thumbnail();
-      // 落盘是 unawaited 的异步写：先冲刷事件队列等写盘完成（真实场景是稍后访问）
-      await pumpEventQueue();
+      // 落盘是 unawaited 的异步写（tmp+delete+rename 三段 I/O）：等盘完成
+      // （真实场景是稍后访问）
+      await Future.delayed(const Duration(milliseconds: 300));
       // refreshRemote 会重建实例，内存缓存清零——模拟新实例
       final img2 = RemoteImage(MockImgSyncerClient(), 'a.jpg',
           size: 10, httpClient: http.Client());
@@ -394,10 +397,68 @@ void main() {
       expect(requestCount['/thumbnail/b.jpg'], 2); // 无缓存，仍走网络
     });
 
+    test('磁盘截断的缓存条目自愈（重新拉取并覆写）', () async {
+      final img1 = RemoteImage(MockImgSyncerClient(), 'c.jpg',
+          size: 10, httpClient: http.Client());
+      final r1 = await img1.thumbnail();
+      await Future.delayed(const Duration(milliseconds: 300)); // 落盘完成
+      // 模拟写盘中途被杀：仅剩开头几字节（不可解码的截断）
+      final files = tmp.listSync().whereType<File>().toList();
+      expect(files, isNotEmpty);
+      for (final f in files) {
+        final data = f.readAsBytesSync();
+        f.writeAsBytesSync(data.sublist(0, 10));
+      }
+      final img2 = RemoteImage(MockImgSyncerClient(), 'c.jpg',
+          size: 10, httpClient: http.Client());
+      final r2 = await img2.thumbnail();
+      expect(requestCount['/thumbnail/c.jpg'], 2); // 截断条目当 miss，重新走网络
+      expect(r2, r1); // 拿回完整图并覆写缓存
+    });
+
     test('默认 loader 在无 path_provider 环境降级为 null', () async {
       // origLoader 是 setUp 里保存的默认实现；flutter test 环境
       // getApplicationSupportDirectory 抛 MissingPluginException → 应返回 null
       expect(await origLoader(), isNull);
     });
+  });
+
+  group('RemoteImage.thumbnail 并发限流（混合失败）', () {
+    late HttpServer server;
+
+    setUp(() async {
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      httpBaseUrl = 'http://127.0.0.1:${server.port}';
+      lastAliveTime = DateTime.now();
+      server.listen((request) {
+        final m = RegExp(r'img(\d+)\.jpg').firstMatch(request.uri.path);
+        final n = int.parse(m!.group(1)!);
+        final resp = request.response;
+        if (n < 8) {
+          resp.statusCode = 500; // img0..img7 持续失败（各重试 3 次）
+          resp.close();
+          return;
+        }
+        resp.statusCode = 200;
+        resp.headers.set('content-length', '4');
+        resp.add([1, 2, 3, 4]);
+        resp.close();
+      });
+    });
+
+    tearDown(() async {
+      lastAliveTime = null;
+      await server.close(force: true);
+    });
+
+    test('8 个持续失败不饿死其余 12 个，全部有结果', () async {
+      final images = List.generate(
+          20,
+          (i) => RemoteImage(MockImgSyncerClient(), 'img$i.jpg',
+              size: 100, httpClient: http.Client()));
+      final results = await Future.wait(images.map((e) => e.thumbnail()));
+      expect(results.where((r) => r != null).length, 12);
+      expect(results.where((r) => r == null).length, 8);
+    }, timeout: const Timeout(Duration(seconds: 30)));
   });
 }

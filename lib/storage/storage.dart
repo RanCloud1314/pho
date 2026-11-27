@@ -382,8 +382,9 @@ class RemoteImage {
     }
     // 磁盘缓存：命中不走网络、不占信号量（刷新重建实例后的二次拉取也在此命中）
     final cache = await thumbnailCacheLoader();
+    // 解码失败的缓存条目（写盘中途被杀截断/位腐烂）当 miss，重新走网络并覆写
     final cached = await cache?.read(path, size);
-    if (cached != null) {
+    if (cached != null && await isValidImage(cached)) {
       thumbnailData = cached;
       return cached;
     }

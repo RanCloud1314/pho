@@ -32,7 +32,16 @@ class ThumbnailCache {
   Future<void> write(String path, int? size, Uint8List bytes) async {
     try {
       await baseDir.create(recursive: true);
-      await File(_file(path, size)).writeAsBytes(bytes, flush: true);
+      final f = File(_file(path, size));
+      final tmp = File('${f.path}.tmp');
+      await tmp.writeAsBytes(bytes, flush: true);
+      // 原子落盘：写盘被杀最多留下完整内容的 .tmp（read 永远看不到），
+      // 不会出现半截 key 文件；Windows rename 不能覆盖已存在目标，先删后换——
+      // 删除瞬间最多让下一次 read 变 miss（走网络），无毒化风险
+      if (await f.exists()) {
+        await f.delete();
+      }
+      await tmp.rename(f.path);
     } catch (_) {}
   }
 }
