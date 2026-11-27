@@ -142,6 +142,42 @@ func (s *S3TestSuite) TestDownloadWithOffset() {
 	s.Equal(int64(len(static.Pic1)), size)
 }
 
+func (s *S3TestSuite) TestConcurrentDownload() {
+	d := s.newDrive("")
+	key := "2026/11/25/concurrent.jpg"
+	s.upload(d, key)
+
+	// 并发 20 > 上限 8：若 semBody 的 Close 不释放槽位，后续批次会
+	// 永久阻塞、测试超时失败；内容一致性同时验证分片拼接无串扰。
+	const n = 20
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rc, _, err := d.Download(key)
+			if err != nil {
+				errs <- err
+				return
+			}
+			b, err := io.ReadAll(rc)
+			rc.Close() // 槽位在此释放
+			if err == nil && !bytes.Equal(static.Pic1, b) {
+				err = fmt.Errorf("content mismatch")
+			}
+			if err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		s.Require().NoError(err)
+	}
+}
+
 func (s *S3TestSuite) TestRangeDirs() {
 	d := s.newDrive("")
 	s.upload(d, "rd/2026/11/25/a.jpg")

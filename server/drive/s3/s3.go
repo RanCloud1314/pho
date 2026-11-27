@@ -14,9 +14,11 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	sdkhttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
@@ -31,10 +33,11 @@ var listPageSize int
 // 并行分片下载参数：首张原图冷连接十几秒的根因是单连接 TCP 慢启动，
 // 4 条连接并行取回绕开爬坡。
 const (
-	firstChunkSize  = 2 << 20  // 首片大小，也是分片起点
-	tailFloor       = 1 << 20 // 尾片下限，避免为几百 KB 开多条连接
-	maxTails        = 3       // 并行尾片数（加上首片共 4 条连接）
-	parallelMaxSize = 32 << 20 // 超过该大小退回单流：整体缓冲不划算（视频等大文件）
+	firstChunkSize    = 2 << 20  // 首片大小，也是分片起点
+	tailFloor         = 1 << 20  // 尾片下限，避免为几百 KB 开多条连接
+	maxTails          = 3        // 并行尾片数（加上首片共 4 条连接）
+	parallelMaxSize   = 32 << 20 // 超过该大小退回单流：整体缓冲不划算（视频等大文件）
+	maxConcurrentGets = 8        // GET 并发上限：挡客户端缩略图风暴（spec: 冷启动优化）
 )
 
 type S3 struct {
@@ -47,6 +50,7 @@ type S3 struct {
 	root          string
 	follow302     bool
 	force302HTTPS bool
+	sem           chan struct{} // GET 并发槽位，download 时占用、body Close 时释放
 }
 
 func NewS3(endpoint, region, accessKeyID, secretAccessKey, bucket, root string, pathStyle, follow302, force302HTTPS bool) (*S3, error) {
@@ -64,9 +68,16 @@ func NewS3(endpoint, region, accessKeyID, secretAccessKey, bucket, root string, 
 	// 只限制首字节等待，不限流式 body，否则大视频会被中途掐断
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = 60 * time.Second
+	// 默认空闲连接每主机仅 2 条，并发 6~8 时反复建拆（spec: 冷启动优化）
+	tr.MaxIdleConnsPerHost = 16
 	noRedir := &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
+	// SDK 客户端（follow302=false 时缩略图全走它）同样修首字节等待与空闲连接数
+	opts = append(opts, config.WithHTTPClient(sdkhttp.NewBuildableClient().WithTransportOptions(func(t *http.Transport) {
+		t.ResponseHeaderTimeout = 60 * time.Second
+		t.MaxIdleConnsPerHost = 16
+	})))
 	cli := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.UsePathStyle = pathStyle
 	})
@@ -80,6 +91,7 @@ func NewS3(endpoint, region, accessKeyID, secretAccessKey, bucket, root string, 
 		root:          strings.Trim(root, "/"),
 		follow302:     follow302,
 		force302HTTPS: force302HTTPS,
+		sem:           make(chan struct{}, maxConcurrentGets),
 	}, nil
 }
 
@@ -178,7 +190,38 @@ func (d *S3) DownloadWithOffset(p string, offset int64) (io.ReadCloser, int64, e
 	return d.download(context.Background(), p, offset)
 }
 
+// download：所有 GET 共享并发上限；body Close 时释放槽位。
 func (d *S3) download(ctx context.Context, p string, offset int64) (io.ReadCloser, int64, error) {
+	select {
+	case d.sem <- struct{}{}:
+	case <-ctx.Done():
+		return nil, 0, ctx.Err()
+	}
+	rc, size, err := d.downloadInner(ctx, p, offset)
+	if err != nil {
+		<-d.sem
+		return nil, 0, err
+	}
+	return &semBody{rc: rc, sem: d.sem}, size, nil
+}
+
+// semBody 在 Close 时释放并发槽位；sync.Once 防双释放。
+type semBody struct {
+	rc   io.ReadCloser
+	sem  chan struct{}
+	once sync.Once
+}
+
+func (b *semBody) Read(p []byte) (int, error) { return b.rc.Read(p) }
+
+func (b *semBody) Close() error {
+	err := b.rc.Close()
+	b.once.Do(func() { <-b.sem })
+	return err
+}
+
+// downloadInner 为原 download 主体。
+func (d *S3) downloadInner(ctx context.Context, p string, offset int64) (io.ReadCloser, int64, error) {
 	if offset == 0 {
 		// 全量下载走分片：首片 Range bytes=0-2M 的 206 Content-Range 给出总大小，
 		// 据此决定单流（小对象/服务端忽略 Range）或并行分片
