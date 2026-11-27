@@ -1,6 +1,7 @@
 package s3
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -21,10 +22,20 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
+	awshttp "github.com/aws/smithy-go/transport/http"
 )
 
 // listPageSize > 0 时覆盖单页条数，测试用它强制分页
 var listPageSize int
+
+// 并行分片下载参数：首张原图冷连接十几秒的根因是单连接 TCP 慢启动，
+// 4 条连接并行取回绕开爬坡。
+const (
+	firstChunkSize  = 2 << 20  // 首片大小，也是分片起点
+	tailFloor       = 1 << 20 // 尾片下限，避免为几百 KB 开多条连接
+	maxTails        = 3       // 并行尾片数（加上首片共 4 条连接）
+	parallelMaxSize = 32 << 20 // 超过该大小退回单流：整体缓冲不划算（视频等大文件）
+)
 
 type S3 struct {
 	cli           *s3.Client
@@ -168,17 +179,295 @@ func (d *S3) DownloadWithOffset(p string, offset int64) (io.ReadCloser, int64, e
 }
 
 func (d *S3) download(ctx context.Context, p string, offset int64) (io.ReadCloser, int64, error) {
+	if offset == 0 {
+		// 全量下载走分片：首片 Range bytes=0-2M 的 206 Content-Range 给出总大小，
+		// 据此决定单流（小对象/服务端忽略 Range）或并行分片
+		if d.follow302 {
+			return d.downloadDirectFull(ctx, p)
+		}
+		return d.downloadFull(ctx, p)
+	}
 	if d.follow302 {
-		if offset > 0 {
-			// 标准 S3/R2/MinIO 支持签名 Range，先走 SDK 只取尾部；
-			// OpenList 拒绝带 Range 的签名请求（坑 4），失败后退回 302 流程（本地丢弃前 offset 字节）
-			if rc, size, err := d.getObject(ctx, p, offset); err == nil {
-				return rc, size, nil
-			}
+		// 标准 S3/R2/MinIO 支持签名 Range，先走 SDK 只取尾部；
+		// OpenList 拒绝带 Range 的签名请求（坑 4），失败后退回 302 流程（本地丢弃前 offset 字节）
+		if rc, size, err := d.getObject(ctx, p, offset); err == nil {
+			return rc, size, nil
 		}
 		return d.downloadFollow302(ctx, p, offset)
 	}
 	return d.getObject(ctx, p, offset)
+}
+
+// downloadFull 走 SDK 的全量下载。
+func (d *S3) downloadFull(ctx context.Context, p string) (io.ReadCloser, int64, error) {
+	first, err := d.getObjectRange(ctx, p, 0, firstChunkSize-1)
+	if err != nil {
+		if isRangeNotSatisfiable(err) {
+			return d.getObject(ctx, p, 0) // 空对象：S3 对 Range 返回 416
+		}
+		return nil, 0, err
+	}
+	if first.ContentRange == nil {
+		// 服务端忽略 Range，body 就是完整对象
+		return first.Body, aws.ToInt64(first.ContentLength), nil
+	}
+	total, ok := parseTotal(aws.ToString(first.ContentRange))
+	if !ok {
+		first.Body.Close()
+		return nil, 0, fmt.Errorf("s3 download %s: bad Content-Range %q", p, aws.ToString(first.ContentRange))
+	}
+	if total > parallelMaxSize {
+		first.Body.Close()
+		return d.getObject(ctx, p, 0) // 大文件退回单流
+	}
+	return stitchTails(ctx, first.Body, total, func(ctx context.Context, start, end int64) (io.ReadCloser, error) {
+		out, err := d.getObjectRange(ctx, p, start, end)
+		if err != nil {
+			return nil, err
+		}
+		return out.Body, nil
+	})
+}
+
+// downloadDirectFull 走 302 直链的全量下载：分片打在直链上（坑 4：签名请求不能带 Range）。
+func (d *S3) downloadDirectFull(ctx context.Context, p string) (io.ReadCloser, int64, error) {
+	po, err := d.presigner.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(d.bucket),
+		Key:    aws.String(d.key(p)),
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, po.URL, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	rsp, err := d.httpNoRedir.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	switch rsp.StatusCode {
+	case http.StatusOK: // 服务端开了 web_proxy，直接中转
+		return d.offsetBody(ctx, p, rsp, 0)
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+	default:
+		rsp.Body.Close()
+		return nil, 0, fmt.Errorf("s3 download %s: unexpected status %d", p, rsp.StatusCode)
+	}
+	loc := rsp.Header.Get("Location")
+	rsp.Body.Close()
+	if loc == "" {
+		return nil, 0, fmt.Errorf("s3 download %s: %d without Location", p, rsp.StatusCode)
+	}
+	u, err := url.Parse(loc)
+	if err != nil {
+		return nil, 0, fmt.Errorf("s3 download %s: bad Location: %w", p, err)
+	}
+	if d.force302HTTPS && u.Scheme != "https" {
+		return nil, 0, fmt.Errorf("s3 download %s: redirect Location scheme is %q, want https", p, u.Scheme)
+	}
+
+	first, err := d.directGet(ctx, loc, 0, firstChunkSize-1)
+	if err != nil {
+		return nil, 0, err
+	}
+	switch first.StatusCode {
+	case http.StatusOK: // 直链忽略 Range，body 是完整对象
+		return d.offsetBody(ctx, p, first, 0)
+	case http.StatusRequestedRangeNotSatisfiable: // 空对象
+		first.Body.Close()
+		plain, err := d.directGet(ctx, loc, -1, -1)
+		if err != nil {
+			return nil, 0, err
+		}
+		return d.offsetBody(ctx, p, plain, 0)
+	case http.StatusPartialContent:
+	default:
+		first.Body.Close()
+		return nil, 0, fmt.Errorf("s3 direct download %s: unexpected status %d", p, first.StatusCode)
+	}
+	total, ok := parseTotal(first.Header.Get("Content-Range"))
+	if !ok {
+		first.Body.Close()
+		return nil, 0, fmt.Errorf("s3 direct download %s: bad Content-Range %q", p, first.Header.Get("Content-Range"))
+	}
+	if total > parallelMaxSize {
+		first.Body.Close()
+		plain, err := d.directGet(ctx, loc, -1, -1) // 大文件退回单流
+		if err != nil {
+			return nil, 0, err
+		}
+		return d.offsetBody(ctx, p, plain, 0)
+	}
+	return stitchTails(ctx, first.Body, total, func(ctx context.Context, start, end int64) (io.ReadCloser, error) {
+		r, err := d.directGet(ctx, loc, start, end)
+		if err != nil {
+			return nil, err
+		}
+		if r.StatusCode != http.StatusPartialContent {
+			r.Body.Close()
+			return nil, fmt.Errorf("s3 direct download %s: chunk %d-%d: status %d", p, start, end, r.StatusCode)
+		}
+		return r.Body, nil
+	})
+}
+
+// directGet 请求直链；start<0 时不带 Range。
+func (d *S3) directGet(ctx context.Context, loc string, start, end int64) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, loc, nil)
+	if err != nil {
+		return nil, err
+	}
+	if start >= 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+	}
+	return d.httpFollow.Do(req)
+}
+
+func (d *S3) getObjectRange(ctx context.Context, p string, start, end int64) (*s3.GetObjectOutput, error) {
+	return d.cli.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(d.bucket),
+		Key:    aws.String(d.key(p)),
+		Range:  aws.String(fmt.Sprintf("bytes=%d-%d", start, end)),
+	})
+}
+
+func isRangeNotSatisfiable(err error) bool {
+	var ae smithy.APIError
+	if errors.As(err, &ae) && ae.ErrorCode() == "InvalidRange" {
+		return true
+	}
+	var re *awshttp.ResponseError
+	return errors.As(err, &re) && re.HTTPStatusCode() == http.StatusRequestedRangeNotSatisfiable
+}
+
+// tailRanges 计算首片之后的取片区间：拆成 ≤maxTails 片（调用方保证 total ≤ parallelMaxSize）。
+func tailRanges(total int64) [][2]int64 {
+	rem := total - firstChunkSize
+	if rem <= 0 {
+		return nil
+	}
+	n := (rem + tailFloor - 1) / tailFloor
+	if n > maxTails {
+		n = maxTails
+	}
+	per := rem / int64(n)
+	ranges := make([][2]int64, 0, n)
+	start := int64(firstChunkSize)
+	for i := int64(0); i < n; i++ {
+		end := start + per - 1
+		if i == n-1 {
+			end = total - 1
+		}
+		ranges = append(ranges, [2]int64{start, end})
+		start = end + 1
+	}
+	return ranges
+}
+
+type tailResult struct {
+	buf []byte
+	err error
+}
+
+type tail struct {
+	res chan tailResult
+}
+
+func startTail(ctx context.Context, fetch func(ctx context.Context, start, end int64) (io.ReadCloser, error), start, end int64) *tail {
+	t := &tail{res: make(chan tailResult, 1)}
+	go func() {
+		rc, err := fetch(ctx, start, end)
+		if err != nil {
+			t.res <- tailResult{err: err}
+			return
+		}
+		b, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.res <- tailResult{err: err}
+			return
+		}
+		if int64(len(b)) != end-start+1 {
+			t.res <- tailResult{err: fmt.Errorf("s3 download: chunk %d-%d got %d bytes", start, end, len(b))}
+			return
+		}
+		t.res <- tailResult{buf: b}
+	}()
+	return t
+}
+
+// stitchTails 返回 first 与尾片按序拼接的 reader。
+// 尾片立即并行启动（多连接绕开 TCP 慢启动），读到时通常已就绪；
+// Close 取消未完成的请求，丢弃式读取（如 GCM header 嗅探）不浪费整文件下载。
+func stitchTails(parent context.Context, first io.ReadCloser, total int64, fetch func(ctx context.Context, start, end int64) (io.ReadCloser, error)) (io.ReadCloser, int64, error) {
+	ranges := tailRanges(total)
+	if len(ranges) == 0 {
+		return first, total, nil
+	}
+	ctx, cancel := context.WithCancel(parent)
+	pd := &parallelDownload{first: first, cancel: cancel}
+	for _, rg := range ranges {
+		pd.tails = append(pd.tails, startTail(ctx, fetch, rg[0], rg[1]))
+	}
+	return pd, total, nil
+}
+
+// parallelDownload 按序读 first 再按序读尾片，实现 io.ReadCloser
+type parallelDownload struct {
+	first     io.ReadCloser
+	tails     []*tail
+	cancel    context.CancelFunc
+	cur       io.Reader
+	firstDone bool
+	i         int
+}
+
+func (p *parallelDownload) next() (io.Reader, error) {
+	if !p.firstDone {
+		p.firstDone = true
+		return p.first, nil
+	}
+	if p.i < len(p.tails) {
+		r := <-p.tails[p.i].res
+		p.i++
+		if r.err != nil {
+			return nil, r.err
+		}
+		return bytes.NewReader(r.buf), nil
+	}
+	return nil, nil
+}
+
+func (p *parallelDownload) Read(b []byte) (int, error) {
+	for {
+		if p.cur == nil {
+			r, err := p.next()
+			if err != nil {
+				return 0, err
+			}
+			if r == nil {
+				return 0, io.EOF
+			}
+			p.cur = r
+		}
+		n, err := p.cur.Read(b)
+		if n > 0 {
+			return n, nil
+		}
+		if err == io.EOF {
+			p.cur = nil
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+	}
+}
+
+func (p *parallelDownload) Close() error {
+	p.cancel()
+	return p.first.Close()
 }
 
 func (d *S3) getObject(ctx context.Context, p string, offset int64) (io.ReadCloser, int64, error) {

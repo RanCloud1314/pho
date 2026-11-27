@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -347,6 +348,226 @@ func TestFollow302ChunkedDirectLink(t *testing.T) {
 	_, _, err = d.Download("a.jpg")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "Content-Length")
+}
+
+// —— 并行分片下载 ——
+// 根因：冷启动首张原图十几秒 = 单连接 TCP 慢启动；分片多连接并行取回。
+// 首片 Range bytes=0-2M 的 206 Content-Range 给出总大小，据此决定单流或分片。
+
+// patternContent 生成确定性伪随机内容
+func patternContent(n int) []byte {
+	b := make([]byte, n)
+	x := uint32(123456789)
+	for i := range b {
+		x = x*1664525 + 1013904223
+		b[i] = byte(x >> 24)
+	}
+	return b
+}
+
+type rangeCounter struct {
+	mu     sync.Mutex
+	gets   int
+	ranged int
+}
+
+func (c *rangeCounter) record(rng string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.gets++
+	if rng != "" {
+		c.ranged++
+	}
+}
+
+func (c *rangeCounter) snapshot() (gets, ranged int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.gets, c.ranged
+}
+
+// newRangeS3Server 模拟支持 Range 的 S3 GetObject（path-style）
+func newRangeS3Server(t *testing.T, content []byte) (*httptest.Server, *rangeCounter) {
+	c := &rangeCounter{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rng := r.Header.Get("Range")
+		c.record(rng)
+		start, end := int64(0), int64(len(content)-1)
+		if rng != "" {
+			fmt.Sscanf(rng, "bytes=%d-%d", &start, &end)
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(content)))
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(int(end-start+1)))
+		if rng != "" {
+			w.WriteHeader(http.StatusPartialContent)
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+		w.Write(content[start : end+1])
+	}))
+	t.Cleanup(srv.Close)
+	return srv, c
+}
+
+func TestParallelDownloadSDK(t *testing.T) {
+	content := patternContent(5 << 20) // 5MB：首片 2MB + 尾片 3MB
+	srv, c := newRangeS3Server(t, content)
+	d, err := NewS3(srv.URL, "us-east-1", "ak", "sk", "bucket", "", true, false, false)
+	require.NoError(t, err)
+
+	rc, size, err := d.Download("a.jpg")
+	require.NoError(t, err)
+	b, err := io.ReadAll(rc)
+	rc.Close()
+	require.NoError(t, err)
+	require.Equal(t, content, b)
+	require.Equal(t, int64(len(content)), size)
+	gets, ranged := c.snapshot()
+	require.GreaterOrEqual(t, ranged, 3, "窗口内对象应当并行分片")
+	require.Equal(t, gets, ranged, "分片路径全部带 Range")
+}
+
+func TestParallelDownloadLargeFallsBack(t *testing.T) {
+	content := patternContent(33 << 20) // >32MB：退回单流，不整体缓冲
+	srv, c := newRangeS3Server(t, content)
+	d, err := NewS3(srv.URL, "us-east-1", "ak", "sk", "bucket", "", true, false, false)
+	require.NoError(t, err)
+
+	rc, size, err := d.Download("a.jpg")
+	require.NoError(t, err)
+	b, err := io.ReadAll(rc)
+	rc.Close()
+	require.NoError(t, err)
+	require.Equal(t, content, b)
+	require.Equal(t, int64(len(content)), size)
+	gets, ranged := c.snapshot()
+	require.Equal(t, 2, gets, "大文件：首片探测 + 单流全量")
+	require.Equal(t, 1, ranged)
+}
+
+func TestParallelDownloadRangeIgnored(t *testing.T) {
+	content := patternContent(3 << 20)
+	c := &rangeCounter{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c.record(r.Header.Get("Range"))
+		w.Header().Set("Content-Length", strconv.Itoa(len(content)))
+		w.Write(content) // 无视 Range，整文件 200
+	}))
+	defer srv.Close()
+	d, err := NewS3(srv.URL, "us-east-1", "ak", "sk", "bucket", "", true, false, false)
+	require.NoError(t, err)
+
+	rc, size, err := d.Download("a.jpg")
+	require.NoError(t, err)
+	b, err := io.ReadAll(rc)
+	rc.Close()
+	require.NoError(t, err)
+	require.Equal(t, content, b)
+	require.Equal(t, int64(len(content)), size)
+	gets, _ := c.snapshot()
+	require.Equal(t, 1, gets, "服务端忽略 Range 时应当单请求流式")
+}
+
+func TestParallelDownloadEmptyObject(t *testing.T) {
+	c := &rangeCounter{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rng := r.Header.Get("Range")
+		c.record(rng)
+		if rng != "" { // S3 对空对象 + Range 返回 416 InvalidRange
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			fmt.Fprint(w, `<Error><Code>InvalidRange</Code><Message>range not satisfiable</Message></Error>`)
+			return
+		}
+		w.Header().Set("Content-Length", "0")
+		w.Write(nil)
+	}))
+	defer srv.Close()
+	d, err := NewS3(srv.URL, "us-east-1", "ak", "sk", "bucket", "", true, false, false)
+	require.NoError(t, err)
+
+	rc, size, err := d.Download("a.jpg")
+	require.NoError(t, err)
+	b, _ := io.ReadAll(rc)
+	rc.Close()
+	require.Empty(t, b)
+	require.Equal(t, int64(0), size)
+}
+
+func TestParallelDownloadFollow302(t *testing.T) {
+	content := patternContent(5 << 20)
+	c := &rangeCounter{}
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			t.Errorf("direct link must not carry Authorization")
+		}
+		rng := r.Header.Get("Range")
+		c.record(rng)
+		start, end := int64(0), int64(len(content)-1)
+		if rng != "" {
+			fmt.Sscanf(rng, "bytes=%d-%d", &start, &end)
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(content)))
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(int(end-start+1)))
+		if rng != "" {
+			w.WriteHeader(http.StatusPartialContent)
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+		w.Write(content[start : end+1])
+	}))
+	defer direct.Close()
+
+	openlist := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") != "" { // 坑 4：带 Range 的签名请求被拒绝
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Location", direct.URL+"/file")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer openlist.Close()
+
+	d, err := NewS3(openlist.URL, "us-east-1", "ak", "sk", "bucket", "", true, true, false)
+	require.NoError(t, err)
+
+	rc, size, err := d.Download("a.jpg")
+	require.NoError(t, err)
+	b, err := io.ReadAll(rc)
+	rc.Close()
+	require.NoError(t, err)
+	require.Equal(t, content, b)
+	require.Equal(t, int64(len(content)), size)
+	_, ranged := c.snapshot()
+	require.GreaterOrEqual(t, ranged, 3, "直链上应当并行分片")
+}
+
+func TestFollow302EmptyObject(t *testing.T) {
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") != "" {
+			w.Header().Set("Content-Range", "bytes */0")
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		w.Header().Set("Content-Length", "0")
+		w.Write(nil)
+	}))
+	defer direct.Close()
+
+	openlist := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", direct.URL+"/file")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer openlist.Close()
+
+	d, err := NewS3(openlist.URL, "us-east-1", "ak", "sk", "bucket", "", true, true, false)
+	require.NoError(t, err)
+
+	rc, size, err := d.Download("a.jpg")
+	require.NoError(t, err)
+	b, _ := io.ReadAll(rc)
+	rc.Close()
+	require.Empty(t, b)
+	require.Equal(t, int64(0), size)
 }
 
 // web_proxy 中转：预签名 GET 直接 200 分块（无 Content-Length），list 仍可用——用 list 探测真实大小
