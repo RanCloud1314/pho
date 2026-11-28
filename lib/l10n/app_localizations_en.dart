@@ -75,6 +75,18 @@ class AppLocalizationsEn extends AppLocalizations {
   String get uploading => 'Uploading';
 
   @override
+  String get uploadPreparing => 'Preparing file';
+
+  @override
+  String get uploadConfirming => 'Waiting for cloud confirmation';
+
+  @override
+  String get uploadRetrying => 'Retrying upload';
+
+  @override
+  String get uploadSendRate => 'Send rate';
+
+  @override
   String get downloading => 'Downloading';
 
   @override

@@ -774,17 +774,15 @@ class GalleryViewerRouteState extends State<GalleryViewerRoute>
                       Center(
                         child: Consumer<StateModel>(
                           builder: (context, model, child) {
-                            double percent = 0;
-                            if (all[currentIndex].isLocal()) {
-                              percent = model.getUploadPercent(
-                                  all[currentIndex].local!.id);
-                            }
-                            if (percent > 0) {
+                            final progress = all[currentIndex].isLocal()
+                                ? model.uploadProgress[all[currentIndex].local!.id]
+                                : null;
+                            if (progress != null) {
                               return SizedBox(
                                 width: 45,
                                 height: 45,
                                 child: CircularProgressIndicator(
-                                  value: percent,
+                                  value: progress.fraction,
                                   strokeWidth: 6,
                                   backgroundColor: Colors.transparent,
                                 ),

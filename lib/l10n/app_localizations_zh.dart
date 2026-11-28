@@ -75,6 +75,18 @@ class AppLocalizationsZh extends AppLocalizations {
   String get uploading => '上传中';
 
   @override
+  String get uploadPreparing => '准备文件';
+
+  @override
+  String get uploadConfirming => '等待云端确认';
+
+  @override
+  String get uploadRetrying => '正在重试';
+
+  @override
+  String get uploadSendRate => '发送速度';
+
+  @override
   String get downloading => '下载中';
 
   @override

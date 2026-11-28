@@ -2,15 +2,78 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/fregie/img_syncer/server/drive/s3"
 	"github.com/fregie/img_syncer/server/imgmanager"
 )
+
+func TestHTTPUploadProgressLifetime(t *testing.T) {
+	arrived := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		close(arrived)
+		<-release
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, "<html><head><meta></head></html>")
+	}))
+	defer upstream.Close()
+	defer unblock()
+	drive, err := s3.NewS3(upstream.URL, "us-east-1", "test", "test", "bucket", "", true, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := newTestAPI()
+	defer a.im.Close()
+	defer unblock()
+	a.im.SetDrive(drive)
+	const id = "0123456789abcdef0123456789abcdef"
+	post := httptest.NewRequest(http.MethodPost, "/test.jpg", bytes.NewBufferString("photo"))
+	post.RemoteAddr = "127.0.0.1:1234"
+	post.Header.Set("Image-Upload-ID", id)
+	result := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		a.HttpHandler().ServeHTTP(result, post)
+		close(done)
+	}()
+	select {
+	case <-arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("S3 upload did not start")
+	}
+	get := httptest.NewRequest(http.MethodGet, uploadProgressPath+id, nil)
+	get.RemoteAddr = post.RemoteAddr
+	sample := httptest.NewRecorder()
+	a.HttpHandler().ServeHTTP(sample, get)
+	var snapshot s3.UploadSnapshot
+	if err := json.Unmarshal(sample.Body.Bytes(), &snapshot); err != nil ||
+		sample.Code != http.StatusOK || snapshot.Phase != "confirming" ||
+		snapshot.Confirmed != 0 || snapshot.Total != 5 || snapshot.Rate != 0 {
+		t.Errorf("unexpected sample: status=%d body=%q error=%v", sample.Code, sample.Body, err)
+	}
+	unblock()
+	<-done
+	if result.Code != http.StatusBadRequest || result.Body.String() != "error uploading: S3 PutObject HTTP 403" {
+		t.Errorf("unexpected upload result: status=%d body=%q", result.Code, result.Body)
+	}
+	sample = httptest.NewRecorder()
+	a.HttpHandler().ServeHTTP(sample, get)
+	if sample.Code != http.StatusNotFound {
+		t.Errorf("finished upload progress remains available: %d", sample.Code)
+	}
+}
 
 // mockDrive 实现 imgmanager.StorageDrive 接口，用于测试 HTTP Range 处理
 type mockDrive struct {
@@ -30,9 +93,9 @@ func (m *mockDrive) DownloadWithOffset(path string, offset int64) (io.ReadCloser
 	}
 	return io.NopCloser(bytes.NewReader(m.content[offset:])), int64(len(m.content)), nil
 }
-func (m *mockDrive) Delete(path string) error    { return nil }
+func (m *mockDrive) Delete(path string) error                            { return nil }
 func (m *mockDrive) Range(dir string, deal func(fs.FileInfo) bool) error { return nil }
-func (m *mockDrive) Close() error                { return nil }
+func (m *mockDrive) Close() error                                        { return nil }
 
 func newTestAPI() *api {
 	im := imgmanager.NewImgManager(imgmanager.Option{WorkerNum: 1})

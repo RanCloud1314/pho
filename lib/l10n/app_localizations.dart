@@ -230,6 +230,30 @@ abstract class AppLocalizations {
   /// **'Uploading'**
   String get uploading;
 
+  /// No description provided for @uploadPreparing.
+  ///
+  /// In en, this message translates to:
+  /// **'Preparing file'**
+  String get uploadPreparing;
+
+  /// No description provided for @uploadConfirming.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for cloud confirmation'**
+  String get uploadConfirming;
+
+  /// No description provided for @uploadRetrying.
+  ///
+  /// In en, this message translates to:
+  /// **'Retrying upload'**
+  String get uploadRetrying;
+
+  /// No description provided for @uploadSendRate.
+  ///
+  /// In en, this message translates to:
+  /// **'Send rate'**
+  String get uploadSendRate;
+
   /// No description provided for @downloading.
   ///
   /// In en, this message translates to:

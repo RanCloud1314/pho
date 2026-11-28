@@ -202,26 +202,25 @@ void main() {
       state = StateModel();
     });
 
-    test('进度封顶 99%，finishUpload 后归零', () {
-      state.updateUploadProgress('id1', 100, 100);
-      expect(state.getUploadPercent('id1'), closeTo(0.99, 0.0001));
+    test('只显示已确认分片的比例，等待结果时不显示完成', () {
+      state.updateUploadProgress(
+          'id1', const UploadProgress(UploadPhase.preparing));
+      expect(state.uploadProgress['id1']!.fraction, isNull);
+      state.updateUploadProgress(
+          'id1', const UploadProgress(UploadPhase.uploading, confirmed: 5,
+              total: 10, rateBps: 42));
+      expect(state.uploadProgress['id1']!.fraction, 0.5);
+      expect(state.uploadProgress['id1']!.rateBps, 42);
+      state.updateUploadProgress(
+          'id1', const UploadProgress(UploadPhase.confirming, confirmed: 10,
+              total: 10));
+      expect(state.uploadProgress['id1']!.fraction, isNull);
+      expect(state.uploadProgress['id1']!.rateBps, 0);
+      state.finishUpload('id1', false);
+      expect(state.uploadProgress, isEmpty);
+      expect(state.syncedIDs, isEmpty);
       state.finishUpload('id1', true);
-      expect(state.getUploadPercent('id1'), 0);
-      expect(state.uploadProgress.containsKey('id1'), isFalse);
-    });
-
-    test('更新进度时计算速率', () async {
-      state.updateUploadProgress('id1', 0, 1000);
-      // 等待一点时间让两次 update 之间有时间差
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-      state.updateUploadProgress('id1', 500, 1000);
-      expect(state.uploadProgress['id1']!.rateBps, greaterThan(0));
-    });
-
-    test('同一时刻连续两次更新不产生 NaN 速率', () {
-      state.updateUploadProgress('id1', 100, 1000);
-      state.updateUploadProgress('id1', 200, 1000);
-      expect(state.uploadProgress['id1']!.rateBps, isNotNaN);
+      expect(state.syncedIDs, ['id1']);
     });
   });
 }

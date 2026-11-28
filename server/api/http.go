@@ -1,15 +1,19 @@
 package api
 
 import (
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/fregie/img_syncer/server/drive/s3"
 	"github.com/fregie/img_syncer/server/imgmanager"
 )
 
@@ -20,6 +24,7 @@ const (
 	HeaderEncryptPassword = "Image-Encrypt-Password"
 	HeaderIsLivePhoto     = "Image-Is-Live-Photo"
 	maxUploadSize         = 500 << 20 // 500MB
+	uploadProgressPath    = "/_pho/upload-progress/"
 )
 
 func getEncryptType(t string) imgmanager.EncryptType {
@@ -43,8 +48,31 @@ func (a *api) HttpHandler() http.Handler {
 func (a *api) httpHandler(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		if strings.HasPrefix(r.URL.Path, uploadProgressPath) && isLoopback(r) {
+			progress, ok := a.uploads.Load(strings.TrimPrefix(r.URL.Path, uploadProgressPath))
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
+			_ = json.NewEncoder(w).Encode(progress.(*s3.UploadProgress).Snapshot())
+			return
+		}
 		a.httpDownload(w, r)
 	case http.MethodPost:
+		id := r.Header.Get("Image-Upload-ID")
+		if len(id) == 32 && isLoopback(r) {
+			if _, err := hex.DecodeString(id); err == nil {
+				ctx, progress := s3.TrackUpload(r.Context())
+				if _, exists := a.uploads.LoadOrStore(id, progress); exists {
+					http.Error(w, "upload ID already in use", http.StatusConflict)
+					return
+				}
+				defer a.uploads.Delete(id)
+				r = r.WithContext(ctx)
+			}
+		}
 		if strings.HasPrefix(r.URL.Path, "/thumbnail/") {
 			a.httpUploadThumbnail(w, r)
 		} else if strings.HasPrefix(r.URL.Path, "/live/") {
@@ -53,6 +81,11 @@ func (a *api) httpHandler(w http.ResponseWriter, r *http.Request) {
 			a.httpUpload(w, r)
 		}
 	}
+}
+
+func isLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	return err == nil && net.ParseIP(host).IsLoopback()
 }
 
 func (a *api) httpUpload(w http.ResponseWriter, r *http.Request) {
@@ -88,7 +121,7 @@ func (a *api) httpUpload(w http.ResponseWriter, r *http.Request) {
 	err = a.im.Upload(r.Body, length, encodeName(dateTime, name), dateTime, imgmanager.WithEncrypt(imgmanager.EncryptOption{
 		Type:     enctype,
 		Password: encPassword,
-	}), imgmanager.IsLivePhoto(isLivePhoto))
+	}), imgmanager.IsLivePhoto(isLivePhoto), imgmanager.WithUploadRequest(r.Context()))
 
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
@@ -137,7 +170,7 @@ func (a *api) httpUploadThumbnail(w http.ResponseWriter, r *http.Request) {
 	err = a.im.UploadThumbnail(r.Body, length, encodeName(dateTime, name), dateTime, imgmanager.WithEncrypt(imgmanager.EncryptOption{
 		Type:     enctype,
 		Password: encPassword,
-	}), imgmanager.IsLivePhoto(isLivePhoto))
+	}), imgmanager.IsLivePhoto(isLivePhoto), imgmanager.WithUploadRequest(r.Context()))
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
@@ -180,7 +213,7 @@ func (a *api) httpUploadLiveVideo(w http.ResponseWriter, r *http.Request) {
 	err = a.im.UploadLiveVideo(r.Body, length, encodeName(dateTime, name), dateTime, imgmanager.WithEncrypt(imgmanager.EncryptOption{
 		Type:     enctype,
 		Password: encPassword,
-	}), imgmanager.IsLivePhoto(true))
+	}), imgmanager.IsLivePhoto(true), imgmanager.WithUploadRequest(r.Context()))
 	if err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {

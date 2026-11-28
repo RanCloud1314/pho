@@ -34,6 +34,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 void backgroundSyncEntrypoint() async {
   // Step 1: 初始化 Flutter binding（headless engine 必须）
   WidgetsFlutterBinding.ensureInitialized();
+  reportForegroundUploadProgress = false;
 
   // Step 2: 注册 backgroundSync MethodChannel 接收 native 端的 cancel 命令
   bool cancelFlag = false;

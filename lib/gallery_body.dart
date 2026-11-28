@@ -1021,15 +1021,13 @@ class GalleryBodyState extends State<GalleryBody>
                 return FutureBuilder<String>(
                   future: all[i].name(),
                   builder: (context, name) {
-                    double percent = 0;
-                    if (!widget.useLocal) {
-                      percent = name.data == null
-                          ? 0
-                          : stateModel.getDownloadPercent(name.data as String);
-                    } else {
-                      percent = stateModel.getUploadPercent(all[i].local!.id);
-                    }
-                    if (percent > 0) {
+                    final upload = widget.useLocal
+                        ? stateModel.uploadProgress[all[i].local!.id]
+                        : null;
+                    final download = !widget.useLocal && name.data != null
+                        ? stateModel.getDownloadPercent(name.data!)
+                        : 0.0;
+                    if (upload != null || download > 0) {
                       return Positioned(
                         bottom: 2,
                         right: 4,
@@ -1048,7 +1046,7 @@ class GalleryBodyState extends State<GalleryBody>
                             CircularProgressIndicator(
                               strokeWidth: 2,
                               color: colorScheme.onPrimary,
-                              value: percent,
+                              value: upload != null ? upload.fraction : download,
                             )
                           ],
                         ),

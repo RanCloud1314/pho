@@ -340,36 +340,43 @@ class SyncBodyState extends State<SyncBody> {
         subtitle: needLoadThumbnail
             ? Consumer<StateModel>(
                 builder: (context, stateModel, child) {
-                  final percent = stateModel.getUploadPercent(asset.local!.id);
-                  if (percent > 0) {
-                    final st = stateModel.uploadProgress[asset.local!.id];
+                  final progress = stateModel.uploadProgress[asset.local!.id];
+                  if (progress != null) {
+                    final phase = {
+                      UploadPhase.preparing: l10n.uploadPreparing,
+                      UploadPhase.uploading: l10n.uploading,
+                      UploadPhase.confirming: l10n.uploadConfirming,
+                      UploadPhase.retrying: l10n.uploadRetrying,
+                    }[progress.phase]!;
                     return Container(
                       padding: const EdgeInsets.fromLTRB(0, 0, 10, 0),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          LinearProgressIndicator(value: percent),
-                          if (st != null) ...[
-                            const SizedBox(height: AppSpacing.xs),
-                            Text(
-                              '${(percent * 100).toInt()}% '
-                              '${_fmtBytes(st.transmitted)}/${_fmtBytes(st.total)}'
-                              '${st.rateBps > 0 ? ' · ${_fmtRate(st.rateBps)}' : ''}',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodySmall
-                                  ?.copyWith(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .secondary,
-                                    fontFeatures: const [
-                                      FontFeature.tabularFigures()
-                                    ],
+                          LinearProgressIndicator(value: progress.fraction),
+                          const SizedBox(height: AppSpacing.xs),
+                          Text(
+                            [
+                              phase,
+                              if (progress.fraction != null)
+                                '${_fmtBytes(progress.confirmed)}/${_fmtBytes(progress.total)}',
+                              if (progress.rateBps > 0)
+                                '${l10n.uploadSendRate} ${_fmtRate(progress.rateBps)}',
+                            ].join(' · '),
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .secondary,
+                                  fontFeatures: const [
+                                    FontFeature.tabularFigures()
+                                  ],
                                   ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ],
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ],
                       ),
                     );

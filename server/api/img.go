@@ -6,6 +6,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	pb "github.com/fregie/img_syncer/proto"
@@ -16,6 +17,7 @@ type api struct {
 	im        *imgmanager.ImgManager
 	httpPort  int
 	startTime time.Time
+	uploads   sync.Map
 
 	pb.UnimplementedImgSyncerServer
 }

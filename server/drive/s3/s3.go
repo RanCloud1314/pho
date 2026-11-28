@@ -75,10 +75,10 @@ func NewS3(endpoint, region, accessKeyID, secretAccessKey, bucket, root string, 
 		return http.ErrUseLastResponse
 	}}
 	// SDK 客户端（follow302=false 时缩略图全走它）同样修首字节等待与空闲连接数
-	opts = append(opts, config.WithHTTPClient(sdkhttp.NewBuildableClient().WithTransportOptions(func(t *http.Transport) {
+	opts = append(opts, config.WithHTTPClient(uploadHTTPClient{sdkhttp.NewBuildableClient().WithTransportOptions(func(t *http.Transport) {
 		t.ResponseHeaderTimeout = 60 * time.Second
 		t.MaxIdleConnsPerHost = 16
-	})))
+	})}))
 	cfg, err := config.LoadDefaultConfig(context.Background(), opts...)
 	if err != nil {
 		return nil, err
@@ -123,19 +123,30 @@ func (d *S3) Ping(ctx context.Context) error {
 	return err
 }
 
-func (d *S3) Upload(p string, r io.ReadCloser, size int64, _ time.Time) error {
+func (d *S3) Upload(p string, r io.ReadCloser, size int64, date time.Time) error {
+	return d.UploadContext(context.Background(), p, r, size, date)
+}
+
+func (d *S3) UploadContext(ctx context.Context, p string, r io.ReadCloser, size int64, _ time.Time) error {
 	defer r.Close()
-	_, err := d.uploader.Upload(context.Background(), &s3.PutObjectInput{
+	if progress, _ := ctx.Value(uploadProgressKey{}).(*UploadProgress); progress != nil {
+		progress.mu.Lock()
+		progress.state.Total = size
+		progress.parts = make(map[int]bool)
+		progress.sentParts = make(map[int]int64)
+		progress.mu.Unlock()
+	}
+	_, err := d.uploader.Upload(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(d.key(p)),
 		Body:   r,
 	})
 	d.invalidateAlbumIndex()
 	if err != nil || !d.follow302 || size <= 0 {
-		return err
+		return describeUploadError(err)
 	}
 	// OpenList 前面的 nginx/WAF 可能吞掉 PUT body 仍返回 200（指南坑 6），落盘后核对大小
-	ok, got, err := d.probe(context.Background(), d.key(p))
+	ok, got, err := d.probe(ctx, d.key(p))
 	if err != nil {
 		return err
 	}

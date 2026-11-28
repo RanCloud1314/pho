@@ -165,6 +165,19 @@ func WithMediaRequest(ctx context.Context, end int64) OptionFunc {
 	}
 }
 
+func WithUploadRequest(ctx context.Context) OptionFunc {
+	return func(o *Options) { o.ctx = ctx }
+}
+
+func (o Options) upload(d StorageDrive, path string, r io.ReadCloser, size int64, date time.Time) error {
+	if drive, ok := d.(interface {
+		UploadContext(context.Context, string, io.ReadCloser, int64, time.Time) error
+	}); ok && o.ctx != nil {
+		return drive.UploadContext(o.ctx, path, r, size, date)
+	}
+	return d.Upload(path, r, size, date)
+}
+
 func (o Options) end() int64 {
 	if o.rangeEnd == nil {
 		return -1
@@ -268,7 +281,7 @@ func (im *ImgManager) Upload(content io.Reader, contentSize int64, name string, 
 	}
 	d, unlock := im.drive()
 	defer unlock()
-	e := d.Upload(path, &sizeCheckReader{r: reader, want: contentSize}, contentSize, date)
+	e := options.upload(d, path, &sizeCheckReader{r: reader, want: contentSize}, contentSize, date)
 	if e != nil {
 		im.logger.Println("Error uploading:", e)
 		return fmt.Errorf("error uploading: %w", e)
@@ -295,7 +308,7 @@ func (im *ImgManager) UploadThumbnail(thumbnailContent io.Reader, thumbnailSize 
 	}
 	d, unlock := im.drive()
 	defer unlock()
-	e := d.Upload(filepath.Join(defaultThumbnailDir, path),
+	e := options.upload(d, filepath.Join(defaultThumbnailDir, path),
 		&sizeCheckReader{r: reader, want: thumbnailSize}, thumbnailSize, date)
 	if e != nil {
 		im.logger.Printf("Error uploading %s: %s", path, e)
@@ -323,7 +336,7 @@ func (im *ImgManager) UploadLiveVideo(content io.Reader, size int64, name string
 	}
 	d, unlock := im.drive()
 	defer unlock()
-	e := d.Upload(path, &sizeCheckReader{r: reader, want: size}, size, date)
+	e := options.upload(d, path, &sizeCheckReader{r: reader, want: size}, size, date)
 	if e != nil {
 		im.logger.Printf("Error uploading %s: %s", path, e)
 		return fmt.Errorf("error uploading %s thumbnail: %w", path, e)

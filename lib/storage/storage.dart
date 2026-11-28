@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:img_syncer/setting_storage_route.dart';
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:grpc/grpc.dart';
 import 'package:img_syncer/logger/logger.dart';
@@ -32,6 +33,8 @@ String encryptionTypeName(EncryptionType type) {
       return 'AES_256_GCM';
   }
 }
+
+bool reportForegroundUploadProgress = true;
 
 RemoteStorage storage = RemoteStorage("127.0.0.1", 10000);
 
@@ -87,6 +90,18 @@ Map<String, String> remoteMediaHeaders() => {
         'Image-Encrypt-Password': settingModel.encryptionPassword,
       },
     };
+
+class _UploadRequest extends http.BaseRequest {
+  _UploadRequest(Uri uri, this.body) : super('POST', uri);
+
+  final Stream<List<int>> body;
+
+  @override
+  http.ByteStream finalize() {
+    super.finalize();
+    return http.ByteStream(body);
+  }
+}
 
 class RemoteStorage implements RemoteStorageClient {
   int bufferSize = 1024 * 1024;
@@ -164,160 +179,172 @@ class RemoteStorage implements RemoteStorageClient {
   }
 
   Future<void> uploadAssetEntity(AssetEntity asset) async {
-    await checkServer();
-    final file = await asset.originFile;
-    if (file == null) {
-      throw Exception("asset file is null");
-    }
-    String? name = asset.title;
-    name ??= await asset.titleAsync;
-    // print("upload $name");
-    var date = asset.createDateTime;
-    if (date.isBefore(DateTime(1990, 1, 1))) {
-      date = asset.modifiedDateTime;
-    }
-    final dateStr =
-        formatDate(date, [yyyy, ':', mm, ':', dd, ' ', HH, ':', nn, ':', ss]);
-    var thumbnailSize = const ThumbnailSize.square(200);
-    if (asset.type == AssetType.video) {
-      thumbnailSize = const ThumbnailSize.square(800);
-    }
-    final thumbnailData =
-        await asset.thumbnailDataWithSize(thumbnailSize, quality: 90);
-    // 缩略图生成失败（视频/HEIC 等）时降级：跳过缩略图继续上传原件（issue #64/#57）
+    void stage(UploadPhase phase) =>
+        stateModel.updateUploadProgress(asset.id, UploadProgress(phase));
+
+    stage(UploadPhase.preparing);
+    var succeeded = false;
+    File? file;
     File? liveVideoFile;
-    final imgLen = await file.length();
-    final thumbLen = thumbnailData?.length ?? 0;
-    int totalLen = imgLen + thumbLen;
-    stateModel.updateUploadProgress(asset.id, 1, totalLen);
-    int maxRetries = 3;
-    int retryCount = 0;
-    bool succeeded = false;
-    while (!succeeded) {
-      int uploaded = 0;
-      try {
-        // live 视频在重试循环内重新获取：iCloud 优化存储下视频可能未下载，
-        // 首轮拿不到（返回 null），重试时可能已下载完成。
-        // 拿不到视频时不静默跳过——抛异常走 catch，失败则不加入 syncedIDs。
-        liveVideoFile = null;
-        if (asset.isLivePhoto) {
-          liveVideoFile = await asset.originFileWithSubtype;
-          if (liveVideoFile == null) {
-            throw Exception(
-                "live video file not available (iCloud not downloaded?)");
-          }
-          totalLen = imgLen + thumbLen + await liveVideoFile.length();
-        }
-        // upload thumbnail（缩略图缺失时跳过，不中止上传）
-        if (thumbnailData != null) {
-          final thumbRsp = await http.post(
-            Uri.parse("$httpBaseUrl/thumbnail/$name"),
-            body: thumbnailData,
-            headers: {
-              'Image-Date': dateStr,
-              'Image-Is-Live-Photo': asset.isLivePhoto ? "true" : "false",
-              'Image-Encrypt-Type': settingModel.enableEncrypt
-                  ? encryptionTypeName(settingModel.encryptionType)
-                  : "None",
-              'Image-Encrypt-Password': settingModel.enableEncrypt
-                  ? settingModel.encryptionPassword
-                  : "",
-            },
-          );
-          stateModel.updateUploadProgress(
-              asset.id, uploaded + thumbLen, totalLen);
-          if (thumbRsp.statusCode != 200) {
-            stateModel.finishUpload(asset.id, false);
-            logger.addLog(
-                "upload $name thumbnail failed: ${thumbRsp.statusCode} ${thumbRsp.body}");
-            throw Exception(
-                "upload thumbnail failed: [${thumbRsp.statusCode}] ${thumbRsp.body}");
-          }
-        }
-        // upload origin image
-        var req = http.StreamedRequest("POST", Uri.parse("$httpBaseUrl/$name"));
-        req.headers['Image-Date'] = dateStr;
-        req.headers['Image-Is-Live-Photo'] =
-            asset.isLivePhoto ? "true" : "false";
-        if (settingModel.enableEncrypt) {
-          req.headers['Image-Encrypt-Type'] =
-              encryptionTypeName(settingModel.encryptionType);
-          req.headers['Image-Encrypt-Password'] =
-              settingModel.encryptionPassword;
-        }
-        req.contentLength = await file.length();
-        file.openRead().listen((chunk) {
-          uploaded += chunk.length;
-          stateModel.updateUploadProgress(
-              asset.id, uploaded + thumbLen, totalLen);
-          req.sink.add(chunk);
-        }, onDone: () {
-          req.sink.close();
-        }, onError: (e) {
-          req.sink.close();
-          throw Exception("file read error: $e");
-        });
-        final response = await req.send();
-        if (response.statusCode != 200) {
-          stateModel.finishUpload(asset.id, false);
-          final body = await response.stream.bytesToString();
-          throw Exception("upload failed: [${response.statusCode}] $body");
-        }
-        // upload Live Photo video
-        if (asset.isLivePhoto && liveVideoFile != null) {
-          final videoName = await asset.titleAsyncWithSubtype;
-          var req = http.StreamedRequest(
-              "POST", Uri.parse("$httpBaseUrl/live/$videoName"));
-          req.headers['Image-Date'] = dateStr;
-          req.headers['Image-Is-Live-Photo'] =
-              asset.isLivePhoto ? "true" : "false";
-          if (settingModel.enableEncrypt) {
-            req.headers['Image-Encrypt-Type'] =
-                encryptionTypeName(settingModel.encryptionType);
-            req.headers['Image-Encrypt-Password'] =
-                settingModel.encryptionPassword;
-          }
-          req.contentLength = await liveVideoFile.length();
-          liveVideoFile.openRead().listen((chunk) {
-            uploaded += chunk.length;
-            stateModel.updateUploadProgress(
-                asset.id, uploaded + thumbLen, totalLen);
-            req.sink.add(chunk);
-          }, onDone: () {
-            req.sink.close();
-          }, onError: (e) {
-            req.sink.close();
-            throw Exception("file read error: $e");
-          });
-          final response = await req.send();
-          if (response.statusCode != 200) {
-            stateModel.finishUpload(asset.id, false);
-            final body = await response.stream.bytesToString();
-            throw Exception("upload failed: [${response.statusCode}] $body");
-          }
-        }
-        stateModel.finishUpload(asset.id, true);
-        succeeded = true;
-      } catch (e) {
-        stateModel.finishUpload(asset.id, false);
-        retryCount++;
-        if (retryCount >= maxRetries) {
-          logger.addLog("upload $name failed: $e");
-          rethrow;
-        }
-      } finally {
-        if (shouldDeleteLocalFileAfterUpload(
-            isIOS: Platform.isIOS, uploadSucceeded: succeeded)) {
-          Future.delayed(const Duration(milliseconds: 200), () {
-            try {
-              file.deleteSync();
-              liveVideoFile?.deleteSync();
-            } catch (e) {
-              logger.addLog("delete file failed: $e");
+    try {
+      await checkServer();
+      final origin = await asset.originFile;
+      if (origin == null) throw Exception('asset file is null');
+      file = origin;
+      final name = asset.title ?? await asset.titleAsync;
+      final date = asset.createDateTime.isBefore(DateTime(1990, 1, 1))
+          ? asset.modifiedDateTime
+          : asset.createDateTime;
+      final dateStr =
+          formatDate(date, [yyyy, ':', mm, ':', dd, ' ', HH, ':', nn, ':', ss]);
+      final thumbnail = await asset.thumbnailDataWithSize(
+          ThumbnailSize.square(asset.type == AssetType.video ? 800 : 200),
+          quality: 90);
+      final originSize = await origin.length();
+      final headers = {
+        'Image-Date': dateStr,
+        'Image-Is-Live-Photo': asset.isLivePhoto.toString(),
+        ...remoteMediaHeaders(),
+      };
+      final prefs = await SharedPreferences.getInstance();
+      final base = Uri.parse(httpBaseUrl);
+      final track = reportForegroundUploadProgress &&
+          base.host == '127.0.0.1' &&
+          getDrive(prefs.getString('drive') ?? 'SMB') == Drive.s3;
+
+      for (var attempt = 1; attempt <= 3; attempt++) {
+        try {
+          liveVideoFile = null;
+          if (asset.isLivePhoto) {
+            liveVideoFile = await asset.originFileWithSubtype;
+            if (liveVideoFile == null) {
+              throw Exception('Live Photo video file is unavailable');
             }
-          });
+          }
+          if (thumbnail != null) {
+            await _uploadComponent(asset.id, base, ['thumbnail', name],
+                'thumbnail', Stream.value(thumbnail), thumbnail.length,
+                headers, track);
+          }
+          await _uploadComponent(asset.id, base, [name], 'original',
+              origin.openRead(), originSize, headers, track);
+          final video = liveVideoFile;
+          if (video != null) {
+            final videoName = await asset.titleAsyncWithSubtype;
+            await _uploadComponent(asset.id, base, ['live', videoName],
+                'Live Photo video', video.openRead(), await video.length(),
+                headers, track);
+          }
+          succeeded = true;
+          break;
+        } catch (error) {
+          if (attempt == 3) {
+            logger.addLog('upload $name failed: $error');
+            rethrow;
+          }
+          stage(UploadPhase.retrying);
+          await Future<void>.delayed(Duration(seconds: attempt));
         }
       }
+    } finally {
+      stateModel.finishUpload(asset.id, succeeded);
+      if (shouldDeleteLocalFileAfterUpload(
+          isIOS: Platform.isIOS, uploadSucceeded: succeeded)) {
+        Future.delayed(const Duration(milliseconds: 200), () {
+          try {
+            file?.deleteSync();
+            liveVideoFile?.deleteSync();
+          } catch (error) {
+            logger.addLog('delete file failed: $error');
+          }
+        });
+      }
+    }
+  }
+
+  Future<void> _uploadComponent(
+      String assetId,
+      Uri base,
+      List<String> path,
+      String component,
+      Stream<List<int>> body,
+      int length,
+      Map<String, String> headers,
+      bool track) async {
+    void update(UploadProgress progress) =>
+        stateModel.updateUploadProgress(assetId, progress);
+
+    update(const UploadProgress(UploadPhase.uploading));
+    var active = true;
+    var polling = false;
+    final random = track ? Random.secure() : null;
+    final id = random == null
+        ? null
+        : List.generate(
+            16, (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+          ).join();
+    final uri = base.replace(
+      pathSegments: ['_pho', 'upload-progress', if (id != null) id],
+    );
+    final progressClient = track ? http.Client() : null;
+    final timer = progressClient == null
+        ? null
+        : Timer.periodic(const Duration(seconds: 1), (_) async {
+            if (polling) return;
+            polling = true;
+            try {
+              final response = await progressClient
+                  .get(uri)
+                  .timeout(const Duration(seconds: 1));
+              if (!active) return;
+              if (response.statusCode == 200) {
+                final data = jsonDecode(response.body) as Map<String, dynamic>;
+                update(UploadProgress(
+                  data['phase'] == 'confirming'
+                      ? UploadPhase.confirming
+                      : UploadPhase.uploading,
+                  confirmed: data['confirmed'] as int,
+                  total: data['total'] as int,
+                  rateBps: (data['rate'] as num).toDouble(),
+                ));
+              } else {
+                update(const UploadProgress(UploadPhase.uploading));
+              }
+            } catch (_) {
+              if (active) update(const UploadProgress(UploadPhase.uploading));
+            } finally {
+              polling = false;
+            }
+          });
+    try {
+      final stream = body.transform(
+        StreamTransformer<List<int>, List<int>>.fromHandlers(
+          handleDone: (sink) {
+            if (active && !track) {
+              update(const UploadProgress(UploadPhase.confirming));
+            }
+            sink.close();
+          },
+        ),
+      );
+      final request = _UploadRequest(base.replace(pathSegments: path), stream)
+        ..contentLength = length
+        ..headers.addAll(headers);
+      if (id != null) request.headers['Image-Upload-ID'] = id;
+      final response = await httpClient.send(request);
+      if (response.statusCode != 200) {
+        final reason = (await response.stream.bytesToString()).trim();
+        throw HttpException(
+            reason.isEmpty ? 'HTTP ${response.statusCode}' : reason);
+      }
+      await response.stream.drain<void>();
+    } catch (error) {
+      throw Exception(
+          '$component · ${error is HttpException ? error.message : error}');
+    } finally {
+      active = false;
+      timer?.cancel();
+      progressClient?.close();
     }
   }
 
