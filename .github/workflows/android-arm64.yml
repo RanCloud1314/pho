@@ -57,12 +57,20 @@ jobs:
         env:
           ORG_GRADLE_PROJECT_phoArm64Only: 'true'
           VERSION_CODE: ${{ steps.version.outputs.code }}
+          PHO_ANDROID_DEBUG_KEYSTORE: ${{ secrets.PHO_ANDROID_DEBUG_KEYSTORE }}
         run: |
+          test -n "$PHO_ANDROID_DEBUG_KEYSTORE"
+          umask 077
+          mkdir -p "$HOME/.android"
+          printf '%s' "$PHO_ANDROID_DEBUG_KEYSTORE" | base64 --decode > "$HOME/.android/debug.keystore"
+          unset PHO_ANDROID_DEBUG_KEYSTORE
           flutter build apk --release --target-platform android-arm64 --build-number "$VERSION_CODE"
           apk=build/app/outputs/flutter-apk/app-release.apk
           badging=$("$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk")
           grep -E '^(package:|native-code:)' <<< "$badging"
           grep -q "versionCode='$VERSION_CODE'" <<< "$badging"
+          certs=$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$apk")
+          grep -Fx 'Signer #1 certificate SHA-256 digest: 133a6839947e7c4974d7f7d7648f4452a88f84aa67f99aba15a0e7ae7339d84f' <<< "$certs"
           apk_entries=$(unzip -Z1 "$apk")
           abis=$(awk -F / '$1 == "lib" && $3 ~ /[.]so$/ {print $2}' <<< "$apk_entries" | sort -u)
           test "$abis" = arm64-v8a
