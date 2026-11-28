@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/ratelimit"
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	sdkhttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -136,10 +138,25 @@ func (d *S3) UploadContext(ctx context.Context, p string, r io.ReadCloser, size 
 		progress.sentParts = make(map[int]int64)
 		progress.mu.Unlock()
 	}
-	_, err := d.uploader.Upload(ctx, &s3.PutObjectInput{
+	input := &s3.PutObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(d.key(p)),
 		Body:   r,
+	}
+	_, err := d.uploader.Upload(ctx, input, func(u *manager.Uploader) {
+		if size <= u.PartSize {
+			return
+		}
+		// shortcut: resume within this request, persist checkpoints if uploads must survive app restarts.
+		multipartRetryer := retry.NewStandard(func(o *retry.StandardOptions) {
+			o.MaxAttempts = 12
+			o.BaseDelay = 250 * time.Millisecond
+			// Keep enough retry tokens for all workers to ride out the same outage.
+			o.RateLimiter = ratelimit.NewTokenRateLimit(1000)
+		})
+		u.ClientOptions = append(u.ClientOptions, func(o *s3.Options) {
+			o.Retryer = multipartRetryer
+		})
 	})
 	d.invalidateAlbumIndex()
 	if err != nil || !d.follow302 || size <= 0 {

@@ -118,6 +118,61 @@ func TestUploadHTML403(t *testing.T) {
 	}
 }
 
+func TestMultipartUploadResumesAfterConnectionLoss(t *testing.T) {
+	var started, accepted, retried, completed atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		query := r.URL.Query()
+		w.Header().Set("Content-Type", "application/xml")
+		if query.Has("uploads") {
+			started.Add(1)
+			fmt.Fprint(w, "<InitiateMultipartUploadResult><UploadId>resume-id</UploadId></InitiateMultipartUploadResult>")
+			return
+		}
+		if query.Get("uploadId") != "resume-id" {
+			t.Errorf("unexpected upload ID: %s", query.Get("uploadId"))
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		switch r.Method {
+		case http.MethodPut:
+			if query.Get("partNumber") == "1" {
+				accepted.Add(1)
+			} else if retried.Add(1) <= 3 {
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				_ = conn.Close()
+				return
+			}
+			w.Header().Set("ETag", `"accepted"`)
+		case http.MethodPost:
+			completed.Add(1)
+			fmt.Fprint(w, "<CompleteMultipartUploadResult><ETag>complete</ETag></CompleteMultipartUploadResult>")
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+		}
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ctx, progress := TrackUpload(ctx)
+	size := manager.DefaultUploadPartSize + 1234
+	drive := uploadTestDrive(t, server.URL)
+	if err := drive.UploadContext(ctx, "video.mp4", io.NopCloser(bytes.NewReader(make([]byte, size))), size, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if started.Load() != 1 || accepted.Load() != 1 || retried.Load() != 4 || completed.Load() != 1 {
+		t.Fatalf("requests: create=%d first part=%d failed part=%d complete=%d",
+			started.Load(), accepted.Load(), retried.Load(), completed.Load())
+	}
+	if snapshot := progress.Snapshot(); snapshot.Confirmed != size {
+		t.Fatalf("confirmed bytes after retry: %+v", snapshot)
+	}
+}
+
 func TestUploadRateUsesTransportReads(t *testing.T) {
 	_, progress := TrackUpload(context.Background())
 	body := &uploadBody{

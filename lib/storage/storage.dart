@@ -307,11 +307,9 @@ class RemoteStorage implements RemoteStorageClient {
                   total: data['total'] as int,
                   rateBps: (data['rate'] as num).toDouble(),
                 ));
-              } else {
-                update(const UploadProgress(UploadPhase.uploading));
               }
             } catch (_) {
-              if (active) update(const UploadProgress(UploadPhase.uploading));
+              // Keep the last confirmed progress when a poll fails.
             } finally {
               polling = false;
             }

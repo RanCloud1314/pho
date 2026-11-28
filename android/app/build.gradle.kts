@@ -66,6 +66,10 @@ android {
 
     buildTypes {
         release {
+            if (project.providers.gradleProperty("phoArm64Only").isPresent) {
+                ndk.abiFilters.clear()
+                ndk.abiFilters.add("arm64-v8a")
+            }
             // 当 key.properties 存在时使用 release 签名，否则 fallback 到 debug 签名
             val useReleaseSigning = keystorePropertiesFile.exists()
             signingConfig = if (useReleaseSigning) signingConfigs.getByName("release") else signingConfigs.getByName("debug")

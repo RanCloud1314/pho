@@ -1,0 +1,77 @@
+name: Android arm64 APK
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Calculate Android version code
+        id: version
+        run: |
+          # This master commit shipped version code 2022.
+          base=cb8bd535e6aedef57992ac1fa9b6b916d3864326
+          git merge-base --is-ancestor "$base" HEAD
+          commits=$(git rev-list --first-parent --count "$base..HEAD")
+          test "$commits" -gt 0
+          echo "code=$((2022 + commits))" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.41.4'
+
+      - uses: android-actions/setup-android@v4
+        with:
+          log-accepted-android-sdk-licenses: false
+
+      - name: Build Android arm64 Go backend
+        run: |
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
+          mobile_version=$(go list -m -f "{{.Version}}" golang.org/x/mobile)
+          go install "golang.org/x/mobile/cmd/gomobile@$mobile_version" "golang.org/x/mobile/cmd/gobind@$mobile_version"
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          CGO_ENABLED=0 gomobile bind -target=android/arm64 -androidapi 21 -ldflags="-s -w" -o android/app/libs/server.aar ./server/run
+
+      - name: Build and verify APK
+        env:
+          ORG_GRADLE_PROJECT_phoArm64Only: 'true'
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+        run: |
+          flutter build apk --release --target-platform android-arm64 --build-number "$VERSION_CODE"
+          apk=build/app/outputs/flutter-apk/app-release.apk
+          badging=$("$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk")
+          grep -E '^(package:|native-code:)' <<< "$badging"
+          grep -q "versionCode='$VERSION_CODE'" <<< "$badging"
+          apk_entries=$(unzip -Z1 "$apk")
+          abis=$(awk -F / '$1 == "lib" && $3 ~ /[.]so$/ {print $2}' <<< "$apk_entries" | sort -u)
+          test "$abis" = arm64-v8a
+          grep -Fx "lib/arm64-v8a/libgojni.so" <<< "$apk_entries"
+          cp "$apk" "Pho-$VERSION_CODE-arm64-v8a.apk"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Pho-${{ steps.version.outputs.code }}-arm64-v8a
+          path: Pho-${{ steps.version.outputs.code }}-arm64-v8a.apk
+          if-no-files-found: error
+          overwrite: true
