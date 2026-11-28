@@ -19,12 +19,12 @@ jobs:
       - name: Calculate Android version code
         id: version
         run: |
-          # This master commit shipped version code 2022.
-          base=cb8bd535e6aedef57992ac1fa9b6b916d3864326
+          # The first 2025 build failed its signing check, so reuse 2025 on the next commit.
+          base=a85d4b58363318607eda4bda7477c447579a20e5
           git merge-base --is-ancestor "$base" HEAD
           commits=$(git rev-list --first-parent --count "$base..HEAD")
           test "$commits" -gt 0
-          echo "code=$((2022 + commits))" >> "$GITHUB_OUTPUT"
+          echo "code=$((2024 + commits))" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-go@v6
         with:
@@ -59,23 +59,27 @@ jobs:
           VERSION_CODE: ${{ steps.version.outputs.code }}
           PHO_ANDROID_DEBUG_KEYSTORE: ${{ secrets.PHO_ANDROID_DEBUG_KEYSTORE }}
         run: |
+          flutter build apk --release --target-platform android-arm64 --build-number "$VERSION_CODE"
           test -n "$PHO_ANDROID_DEBUG_KEYSTORE"
           umask 077
-          mkdir -p "$HOME/.android"
-          printf '%s' "$PHO_ANDROID_DEBUG_KEYSTORE" | base64 --decode > "$HOME/.android/debug.keystore"
+          keystore=$(mktemp)
+          trap 'rm -f "$keystore"' EXIT
+          printf '%s' "$PHO_ANDROID_DEBUG_KEYSTORE" | base64 --decode > "$keystore"
           unset PHO_ANDROID_DEBUG_KEYSTORE
-          flutter build apk --release --target-platform android-arm64 --build-number "$VERSION_CODE"
-          apk=build/app/outputs/flutter-apk/app-release.apk
+          apksigner="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          apk="Pho-$VERSION_CODE-arm64-v8a.apk"
+          "$apksigner" sign --ks "$keystore" --ks-key-alias androiddebugkey \
+            --ks-pass pass:android --key-pass pass:android --out "$apk" \
+            build/app/outputs/flutter-apk/app-release.apk
           badging=$("$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk")
           grep -E '^(package:|native-code:)' <<< "$badging"
           grep -q "versionCode='$VERSION_CODE'" <<< "$badging"
-          certs=$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$apk")
+          certs=$("$apksigner" verify --print-certs "$apk")
           grep -Fx 'Signer #1 certificate SHA-256 digest: 133a6839947e7c4974d7f7d7648f4452a88f84aa67f99aba15a0e7ae7339d84f' <<< "$certs"
           apk_entries=$(unzip -Z1 "$apk")
           abis=$(awk -F / '$1 == "lib" && $3 ~ /[.]so$/ {print $2}' <<< "$apk_entries" | sort -u)
           test "$abis" = arm64-v8a
           grep -Fx "lib/arm64-v8a/libgojni.so" <<< "$apk_entries"
-          cp "$apk" "Pho-$VERSION_CODE-arm64-v8a.apk"
 
       - uses: actions/upload-artifact@v7
         with:
