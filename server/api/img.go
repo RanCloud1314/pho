@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 	"time"
 
 	pb "github.com/fregie/img_syncer/proto"
@@ -12,9 +13,9 @@ import (
 )
 
 type api struct {
-	im                *imgmanager.ImgManager
-	httpPort          int
-	startTime         time.Time
+	im        *imgmanager.ImgManager
+	httpPort  int
+	startTime time.Time
 
 	pb.UnimplementedImgSyncerServer
 }
@@ -51,7 +52,7 @@ func (a *api) ListByDate(ctx context.Context, req *pb.ListByDateRequest) (rsp *p
 	var e error
 	start := time.Now()
 	if req.Date != "" {
-		start, e = time.Parse("2006:01:02", req.Date)
+		start, e = time.ParseInLocation("2006:01:02", req.Date, start.Location())
 		if e != nil {
 			rsp.Success, rsp.Message = false, fmt.Sprintf("param error: date format error: %s", req.Date)
 			return
@@ -59,8 +60,21 @@ func (a *api) ListByDate(ctx context.Context, req *pb.ListByDateRequest) (rsp *p
 	}
 	rsp.Infos = make([]*pb.FileInfo, 0, req.MaxReturn)
 	offset := req.Offset
+	cursor := filepath.ToSlash(req.AfterPath)
+	if cursor != "" {
+		offset = 0
+	}
 	needReturn := req.MaxReturn
-	e = a.im.RangeByDate(start, func(info imgmanager.ImgInfo) bool {
+	e = a.im.RangeAlbum(ctx, start, false, func(info imgmanager.ImgInfo) bool {
+		if cursor != "" {
+			if req.Date != "" && info.Date.Before(start) {
+				return false
+			}
+			if strings.ReplaceAll(filepath.ToSlash(info.Path), "\\", "/") == cursor {
+				cursor = ""
+			}
+			return true
+		}
 		if offset > 0 {
 			offset--
 			return true
@@ -76,6 +90,9 @@ func (a *api) ListByDate(ctx context.Context, req *pb.ListByDateRequest) (rsp *p
 	if e != nil {
 		rsp.Success, rsp.Message = false, e.Error()
 		return
+	}
+	if cursor != "" {
+		rsp.Success, rsp.Message = false, "album cursor expired"
 	}
 	return
 }
@@ -135,7 +152,7 @@ func (a *api) FilterNotUploaded(stream pb.ImgSyncer_FilterNotUploadedServer) err
 	uploadedIDs := make([]string, 0)
 	unmatchedCount := len(targetIDs)
 
-	a.im.RangeByDate(time.Now(), func(info imgmanager.ImgInfo) bool {
+	err := a.im.RangeAlbum(stream.Context(), time.Now(), true, func(info imgmanager.ImgInfo) bool {
 		name := filepath.Base(info.Path)
 		if id, ok := nameToID[name]; ok {
 			if targetIDs[id] {
@@ -146,6 +163,10 @@ func (a *api) FilterNotUploaded(stream pb.ImgSyncer_FilterNotUploadedServer) err
 		}
 		return unmatchedCount > 0
 	})
+
+	if err != nil {
+		return err
+	}
 
 	notUploadedIDs := make([]string, 0, unmatchedCount)
 	for id, unmatched := range targetIDs {

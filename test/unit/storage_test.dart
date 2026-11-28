@@ -8,6 +8,7 @@ import 'package:img_syncer/storage/thumbnail_cache.dart';
 import 'package:img_syncer/proto/img_syncer.pbgrpc.dart';
 import 'package:img_syncer/global.dart';
 import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:mockito/mockito.dart';
 
 class MockImgSyncerClient extends Mock implements ImgSyncerClient {}
@@ -19,6 +20,8 @@ RemoteImage _makeRemoteImage(String path) {
     httpClient: http.Client(),
   );
 }
+
+final _testJpeg = File('test/static/test_pic_01.jpg').readAsBytesSync();
 
 void main() {
   group('RemoteImage.dataStream - contentLength null defense (M9)', () {
@@ -126,13 +129,35 @@ void main() {
       }
 
       expect(total, bigData.length);
-      expect(downloadeds.first, greaterThan(0));
+      expect(downloadeds.first, 0);
       // downloaded 不递减
       for (int i = 1; i < downloadeds.length; i++) {
         expect(downloadeds[i], greaterThanOrEqualTo(downloadeds[i - 1]));
       }
       expect(downloadeds.last, bigData.length);
     });
+  });
+
+  test('截断下载保留原文件并移除临时文件', () async {
+    final dir = await Directory.systemTemp.createTemp('pho-save-test-');
+    addTearDown(() => dir.delete(recursive: true));
+    final destination = File('${dir.path}/original.jpg');
+    await destination.writeAsString('original');
+    final image = RemoteImage(
+      MockImgSyncerClient(),
+      'original.jpg',
+      httpClient: MockClient.streaming((_, __) async => http.StreamedResponse(
+            Stream.value([1, 2, 3]),
+            200,
+            contentLength: 10,
+          )),
+    );
+    lastAliveTime = DateTime.now();
+    httpBaseUrl = 'http://localhost';
+    addTearDown(() => lastAliveTime = null);
+    await expectLater(image.saveTo(destination), throwsA(isA<HttpException>()));
+    expect(await destination.readAsString(), 'original');
+    expect(await dir.list().length, 1);
   });
 
   group('File stream error handling (M13)', () {
@@ -267,8 +292,8 @@ void main() {
         active--;
         final resp = request.response;
         resp.statusCode = 200;
-        resp.headers.set('content-length', '4');
-        resp.add([1, 2, 3, 4]);
+        resp.headers.set('content-length', '${_testJpeg.length}');
+        resp.add(_testJpeg);
         await resp.close();
       });
     });
@@ -310,8 +335,8 @@ void main() {
           return;
         }
         resp.statusCode = 200;
-        resp.headers.set('content-length', '4');
-        resp.add([1, 2, 3, 4]);
+        resp.headers.set('content-length', '${_testJpeg.length}');
+        resp.add(_testJpeg);
         resp.close();
       });
     });
@@ -373,14 +398,14 @@ void main() {
 
     test('新实例命中缓存不再走网络（刷新轮次同理）', () async {
       final img1 = RemoteImage(MockImgSyncerClient(), 'a.jpg',
-          size: 10, httpClient: http.Client());
+          size: 10, cacheNamespace: 'album-a', httpClient: http.Client());
       final r1 = await img1.thumbnail();
       // 落盘是 unawaited 的异步写（tmp+delete+rename 三段 I/O）：等盘完成
       // （真实场景是稍后访问）
       await Future.delayed(const Duration(milliseconds: 300));
       // refreshRemote 会重建实例，内存缓存清零——模拟新实例
       final img2 = RemoteImage(MockImgSyncerClient(), 'a.jpg',
-          size: 10, httpClient: http.Client());
+          size: 10, cacheNamespace: 'album-a', httpClient: http.Client());
       final r2 = await img2.thumbnail();
       expect(requestCount['/thumbnail/a.jpg'], 1);
       expect(r2, r1);
@@ -389,17 +414,17 @@ void main() {
     test('不可解码字节不落缓存（防毒化）', () async {
       responseBody = Uint8List.fromList(utf8.encode('not an image'));
       final img1 = RemoteImage(MockImgSyncerClient(), 'b.jpg',
-          size: 10, httpClient: http.Client());
+          size: 10, cacheNamespace: 'album-a', httpClient: http.Client());
       await img1.thumbnail();
       final img2 = RemoteImage(MockImgSyncerClient(), 'b.jpg',
-          size: 10, httpClient: http.Client());
+          size: 10, cacheNamespace: 'album-a', httpClient: http.Client());
       await img2.thumbnail();
       expect(requestCount['/thumbnail/b.jpg'], 2); // 无缓存，仍走网络
     });
 
     test('磁盘截断的缓存条目自愈（重新拉取并覆写）', () async {
       final img1 = RemoteImage(MockImgSyncerClient(), 'c.jpg',
-          size: 10, httpClient: http.Client());
+          size: 10, cacheNamespace: 'album-a', httpClient: http.Client());
       final r1 = await img1.thumbnail();
       await Future.delayed(const Duration(milliseconds: 300)); // 落盘完成
       // 模拟写盘中途被杀：仅剩开头几字节（不可解码的截断）
@@ -410,10 +435,21 @@ void main() {
         f.writeAsBytesSync(data.sublist(0, 10));
       }
       final img2 = RemoteImage(MockImgSyncerClient(), 'c.jpg',
-          size: 10, httpClient: http.Client());
+          size: 10, cacheNamespace: 'album-a', httpClient: http.Client());
       final r2 = await img2.thumbnail();
       expect(requestCount['/thumbnail/c.jpg'], 2); // 截断条目当 miss，重新走网络
       expect(r2, r1); // 拿回完整图并覆写缓存
+    });
+
+    test('同路径和大小在不同存储中使用独立缓存', () async {
+      final a = RemoteImage(MockImgSyncerClient(), 'same.jpg',
+          size: 10, cacheNamespace: 'album-a', httpClient: http.Client());
+      final b = RemoteImage(MockImgSyncerClient(), 'same.jpg',
+          size: 10, cacheNamespace: 'album-b', httpClient: http.Client());
+      expect(await a.thumbnail(), isNotNull);
+      await Future.delayed(const Duration(milliseconds: 300));
+      expect(await b.thumbnail(), isNotNull);
+      expect(requestCount['/thumbnail/same.jpg'], 2);
     });
 
     test('默认 loader 在无 path_provider 环境降级为 null', () async {
@@ -440,8 +476,8 @@ void main() {
           return;
         }
         resp.statusCode = 200;
-        resp.headers.set('content-length', '4');
-        resp.add([1, 2, 3, 4]);
+        resp.headers.set('content-length', '${_testJpeg.length}');
+        resp.add(_testJpeg);
         resp.close();
       });
     });

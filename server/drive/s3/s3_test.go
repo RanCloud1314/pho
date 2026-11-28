@@ -2,6 +2,7 @@ package s3
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"io/fs"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -640,4 +642,76 @@ func TestWebProxyChunkedRelay(t *testing.T) {
 	rc.Close()
 	require.Equal(t, static.Pic1[5:], b)
 	require.Equal(t, int64(len(static.Pic1)), size)
+}
+
+func TestAlbumIndexReusesListAndInvalidates(t *testing.T) {
+	var lists atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		lists.Add(1)
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprint(w, `<ListBucketResult><IsTruncated>false</IsTruncated>`+
+			`<Contents><Key>album/20261128/a.jpg</Key><Size>9</Size></Contents>`+
+			`<Contents><Key>album/20261128/live_b/b.jpg</Key><Size>10</Size></Contents>`+
+			`<Contents><Key>album/.thumbnail/20261128/a.jpg</Key><Size>1</Size></Contents>`+
+			`</ListBucketResult>`)
+	}))
+	defer srv.Close()
+
+	d, err := NewS3(srv.URL, "us-east-1", "key", "secret", "photos", "album", true, false, false)
+	require.NoError(t, err)
+	require.NoError(t, d.PrepareAlbumIndex(t.Context()))
+	require.NoError(t, d.PrepareAlbumIndex(t.Context()))
+	var names []string
+	require.NoError(t, d.Range("20261128", func(info fs.FileInfo) bool {
+		names = append(names, info.Name())
+		return true
+	}))
+	require.ElementsMatch(t, []string{"a.jpg", "live_b"}, names)
+	require.EqualValues(t, 1, lists.Load())
+	require.NoError(t, d.Delete("20261128/a.jpg"))
+	require.NoError(t, d.PrepareAlbumIndex(t.Context()))
+	require.EqualValues(t, 2, lists.Load())
+}
+
+func TestBoundedDownloadUsesExactRange(t *testing.T) {
+	srv, _ := newRangeS3Server(t, []byte("0123456789"))
+	defer srv.Close()
+	d, err := NewS3(srv.URL, "us-east-1", "key", "secret", "photos", "", true, false, false)
+	require.NoError(t, err)
+	body, size, err := d.DownloadMedia(t.Context(), "movie.mp4", 0, 3)
+	require.NoError(t, err)
+	defer body.Close()
+	data, err := io.ReadAll(body)
+	require.NoError(t, err)
+	require.Equal(t, "0123", string(data))
+	require.EqualValues(t, 10, size)
+}
+
+func TestDownloadCancellationReleasesSlot(t *testing.T) {
+	started := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	d, err := NewS3(srv.URL, "us-east-1", "key", "secret", "photos", "", true, false, false)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	body, _, err := d.DownloadMedia(ctx, "a.jpg", -1, -1)
+	require.NoError(t, err)
+	defer body.Close()
+	<-started
+	cancel()
+	_, err = io.ReadAll(body)
+	require.Error(t, err)
+	require.NoError(t, body.Close())
+	require.Empty(t, d.sem)
 }

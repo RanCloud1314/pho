@@ -222,9 +222,8 @@ class StateModel extends ChangeNotifier {
       if (dt > 0) {
         final instant = (transmitted - state.lastBytes) / (dt / 1e6);
         // EMA 平滑，避免按 chunk 更新时速率跳动
-        state.rateBps = state.rateBps == 0
-            ? instant
-            : 0.3 * instant + 0.7 * state.rateBps;
+        state.rateBps =
+            state.rateBps == 0 ? instant : 0.3 * instant + 0.7 * state.rateBps;
       }
     }
     state.transmitted = transmitted;
@@ -320,9 +319,8 @@ class AssetModel extends ChangeNotifier {
     eventBus
         .on<LocalRefreshEvent>()
         .listen((event) => refreshLocal(event.refreshUnSync));
-    eventBus
-        .on<RemoteRefreshEvent>()
-        .listen((event) => refreshRemote(event.refreshUnSync));
+    eventBus.on<RemoteRefreshEvent>().listen((event) =>
+        refreshRemote(event.refreshUnSync, preserve: event.preserve));
     eventBus.on<FinishGettingLocal>().listen((event) async {
       if (stateModel.lastRefreshUnsyncTime == null) {
         refreshUnsynchronizedPhotos();
@@ -355,7 +353,8 @@ class AssetModel extends ChangeNotifier {
   Completer<bool>? localGetting;
   bool localGettingNeedBreak = false;
   Completer<bool>? remoteGetting;
-  bool remoteGettingNeedBreak = false;
+  String? _remoteNamespace;
+  bool _retryRemoteRefresh = false;
   bool refreshUnsynchronizedNeedBreak = false;
 
   Map<String, String> titleCache = {};
@@ -416,27 +415,12 @@ class AssetModel extends ChangeNotifier {
     }
   }
 
-  Future<void> refreshRemote(bool refreshSync) async {
-    logger.addLog("refresh remote");
+  Future<void> refreshRemote(bool refreshSync, {bool preserve = false}) async {
+    if (preserve && stateModel.isSelectionMode) return;
     if (remoteGetting != null) {
-      if (remoteGettingNeedBreak == true) {
-        return;
-      }
-      remoteGettingNeedBreak = true;
       await remoteGetting!.future;
     }
-    if (stateModel.refreshingUnsynchronized) {
-      refreshUnsynchronizedNeedBreak = true;
-    }
-    remoteHasMore = true;
-    remoteAssets = [];
-    if (refreshSync) {
-      stateModel.setSyncedPhotos([]);
-    }
-    notifyListeners();
-    remoteGetting = null;
-    remoteGettingNeedBreak = false;
-    final finished = await getRemotePhotos();
+    final finished = await getRemotePhotos(refresh: true, preserve: preserve);
     if (finished && refreshSync) {
       await refreshUnsynchronizedPhotos();
     }
@@ -538,56 +522,92 @@ class AssetModel extends ChangeNotifier {
     return true;
   }
 
-  Future<bool> getRemotePhotos() async {
-    await checkServer();
-    if (remoteGetting != null) {
-      await remoteGetting!.future;
-      return false;
-    }
-    remoteGetting = Completer<bool>();
+  Future<bool> getRemotePhotos(
+      {bool refresh = false, bool preserve = false}) async {
+    refresh = refresh || _retryRemoteRefresh;
+    if (remoteGetting != null || (!refresh && !remoteHasMore)) return false;
+    final loading = Completer<bool>();
+    remoteGetting = loading;
+    remoteLastError = null;
     notifyListeners();
-    logger.addLog("start getting remote assets");
     try {
-      while (remoteHasMore) {
-        if (remoteGettingNeedBreak) {
-          remoteGettingNeedBreak = false;
-          remoteGetting?.complete(true);
-          remoteGetting = null;
-          notifyListeners();
-          return false;
+      await checkServer();
+      final namespace = await remoteAlbumNamespace();
+      final sameAlbum = namespace == _remoteNamespace;
+      final firstPage = refresh || remoteAssets.isEmpty || !sameAlbum;
+      final limit = firstPage ? min(pageSize, 48) : pageSize;
+      final day = firstPage ? null : remoteAssets.last.dateCreated();
+      var dayOffset = 0;
+      if (day != null) {
+        for (final asset in remoteAssets.reversed) {
+          if (asset.dateCreated() != day) break;
+          dayOffset++;
         }
-        final offset = remoteAssets.length;
-        final limit = offset == 0 ? min(pageSize, 48) : pageSize;
-        final List<RemoteImage> images =
-            await storageClient.listImages("", offset, limit);
-        if (images.length < limit) {
-          remoteHasMore = false;
-        }
-        for (var i = 0; i < images.length; i++) {
-          try {
-            final asset = Asset(remote: images[i]);
-            remoteAssets.add(asset);
-            if (i % 50 == 0) {
-              notifyListeners();
-            }
-            // asset.thumbnailDataAsync().then((value) => notifyListeners());
-          } catch (e) {
-            logger.addLog(e.toString());
-          }
-        }
-        notifyListeners();
       }
+      final images = await storageClient.listImages(
+        day == null ? '' : formatDate(day, [yyyy, ':', mm, ':', dd]),
+        dayOffset,
+        limit,
+        afterPath: day == null ? '' : remoteAssets.last.remote!.path,
+      );
+      if (namespace != await remoteAlbumNamespace()) return false;
+      final seen = <String>{};
+      final page = <Asset>[
+        for (final image in images)
+          if (seen.add(image.path)) Asset(remote: image),
+      ];
+      if (firstPage) {
+        if (preserve &&
+            sameAlbum &&
+            images.length == limit &&
+            page.isNotEmpty) {
+          final old = {
+            for (final asset in remoteAssets) asset.remote!.path: asset
+          };
+          final boundary = page.last.dateCreated();
+          final lastMatch = remoteAssets.lastIndexWhere(
+            (asset) => seen.contains(asset.remote!.path),
+          );
+          remoteAssets = [
+            for (final asset in page)
+              if (old[asset.remote!.path]?.remote?.size == asset.remote!.size)
+                old[asset.remote!.path]!
+              else
+                asset,
+            if (lastMatch >= 0)
+              for (final asset in remoteAssets.skip(lastMatch + 1))
+                if (!seen.contains(asset.remote!.path) &&
+                    !asset.dateCreated().isAfter(boundary))
+                  asset,
+          ];
+          remoteHasMore = remoteHasMore || remoteAssets.length == page.length;
+        } else {
+          remoteAssets = page;
+          remoteHasMore = images.length == limit;
+        }
+      } else {
+        final paths = remoteAssets.map((asset) => asset.remote!.path).toSet();
+        remoteAssets = [
+          ...remoteAssets,
+          ...page.where((asset) => paths.add(asset.remote!.path)),
+        ];
+        remoteHasMore = images.length == limit;
+      }
+      _remoteNamespace = namespace;
+      _retryRemoteRefresh = false;
+      if (!remoteHasMore) eventBus.fire(FinishGettingRemote());
+      return true;
     } catch (e) {
+      _retryRemoteRefresh =
+          refresh || e.toString().contains('album cursor expired');
       remoteLastError = e.toString();
+      logger.addLog('Remote album load failed: $e');
+      return false;
+    } finally {
+      loading.complete(true);
+      remoteGetting = null;
+      notifyListeners();
     }
-    if (!remoteHasMore) {
-      eventBus.fire(FinishGettingRemote());
-    }
-    remoteGetting?.complete(true);
-    remoteGetting = null;
-    remoteGettingNeedBreak = false;
-    notifyListeners();
-    return true;
   }
 
   void removeLocalAsset(Asset asset) {
@@ -660,22 +680,27 @@ Future<void> refreshUnsynchronizedPhotos() async {
   stateModel.updateLastRefreshUnsyncTime(null);
   final requests = StreamController<FilterNotUploadedRequest>();
   final responses = storageClient.cli.filterNotUploaded(requests.stream);
-  // W7-T1: 两阶段提交 - 先积累新ID，成功后一次性替换，避免中断时丢失
-  final List<String> newSyncedIDs = [];
-  await Future.wait([
-    sendFilterNotUploadedRequests(requests),
-    receiveResponses(responses, accumulatedIDs: newSyncedIDs),
-  ]);
+  try {
+    // W7-T1: 两阶段提交 - 先积累新ID，成功后一次性替换，避免中断时丢失
+    final List<String> newSyncedIDs = [];
+    await Future.wait([
+      sendFilterNotUploadedRequests(requests),
+      receiveResponses(responses, accumulatedIDs: newSyncedIDs),
+    ]);
 
-  // 未被中断
-  if (!assetModel.refreshUnsynchronizedNeedBreak) {
-    // W7-T2: Set 去重后再写入
-    stateModel.setSyncedPhotos(newSyncedIDs.toSet().toList());
-    await stateModel.saveSyncedIDs();
-    stateModel.updateLastRefreshUnsyncTime(DateTime.now());
+    // 未被中断
+    if (!assetModel.refreshUnsynchronizedNeedBreak) {
+      // W7-T2: Set 去重后再写入
+      stateModel.setSyncedPhotos(newSyncedIDs.toSet().toList());
+      await stateModel.saveSyncedIDs();
+      stateModel.updateLastRefreshUnsyncTime(DateTime.now());
+    }
+  } catch (e) {
+    logger.addLog('Sync comparison failed: $e');
+  } finally {
+    assetModel.refreshUnsynchronizedNeedBreak = false;
+    stateModel.setRefreshingUnsynchronized(false);
   }
-  assetModel.refreshUnsynchronizedNeedBreak = false;
-  stateModel.setRefreshingUnsynchronized(false);
 }
 
 Future<void> sendFilterNotUploadedRequests(
@@ -710,21 +735,21 @@ Future<void> sendFilterNotUploadedRequests(
   await requests.close();
 }
 
-Future<void> receiveResponses(
-    Stream<FilterNotUploadedResponse> responses,
+Future<void> receiveResponses(Stream<FilterNotUploadedResponse> responses,
     {List<String>? accumulatedIDs}) async {
   await for (var response in responses) {
     if (!response.success) {
       logger.addLog('Error: ${response.message}');
       SnackBarManager.showSnackBar("Error: ${response.message}");
-      continue;
+      throw StateError(response.message);
     }
     if (accumulatedIDs != null) {
       // W7-T1: 两阶段提交 - 仅积累，不立即写入
       accumulatedIDs.addAll(response.uploadedIDs);
     } else {
       // W7-T2: Set 去重
-      final merged = {...stateModel.syncedIDs, ...response.uploadedIDs}.toList();
+      final merged =
+          {...stateModel.syncedIDs, ...response.uploadedIDs}.toList();
       stateModel.setSyncedPhotos(merged);
     }
     // 使用新字段名，兼容旧字段名

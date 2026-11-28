@@ -10,5 +10,6 @@ abstract class RemoteStorageClient {
   ImgSyncerClient get cli;
   Future<void> uploadXFile(XFile file);
   Future<void> uploadAssetEntity(AssetEntity asset);
-  Future<List<RemoteImage>> listImages(String date, int offset, maxReturn);
+  Future<List<RemoteImage>> listImages(String date, int offset, maxReturn,
+      {String afterPath = ''});
 }

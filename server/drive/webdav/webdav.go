@@ -1,6 +1,7 @@
 package webdav
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -116,12 +117,16 @@ func (d *Webdav) IsExist(path string) (bool, error) {
 }
 
 func (d *Webdav) Download(path string) (io.ReadCloser, int64, error) {
+	return d.download(context.Background(), path)
+}
+
+func (d *Webdav) download(ctx context.Context, path string) (io.ReadCloser, int64, error) {
 	if d.rootPath == "" {
 		return nil, 0, fmt.Errorf("root path is empty")
 	}
 	fullPath := filepath.Join(d.rootPath, path)
 	fullPath = filepath.ToSlash(fullPath)
-	reader, size, err := d.cli.ReadStreamSized(fullPath)
+	reader, size, err := d.cli.ReadStreamSizedContext(ctx, fullPath)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -151,12 +156,23 @@ func (d *Webdav) Delete(path string) error {
 }
 
 func (d *Webdav) DownloadWithOffset(path string, offset int64) (io.ReadCloser, int64, error) {
+	return d.DownloadMedia(context.Background(), path, offset, -1)
+}
+
+func (d *Webdav) DownloadMedia(ctx context.Context, path string, offset, end int64) (io.ReadCloser, int64, error) {
+	if offset < 0 {
+		return d.download(ctx, path)
+	}
+	length := int64(-1)
+	if end >= 0 {
+		length = end - offset + 1
+	}
 	if d.rootPath == "" {
 		return nil, 0, fmt.Errorf("root path is empty")
 	}
 	fullPath := filepath.Join(d.rootPath, path)
 	fullPath = filepath.ToSlash(fullPath)
-	reader, size, err := d.cli.ReadStreamRangeSized(fullPath, offset, -1)
+	reader, size, err := d.cli.ReadStreamRangeSizedContext(ctx, fullPath, offset, length)
 	if err != nil {
 		return nil, 0, err
 	}

@@ -16,12 +16,13 @@ Stream<T> _mockResponseStream<T>(List<T> items) async* {
 class _PagedStorage extends RemoteStorage {
   _PagedStorage() : super('127.0.0.1', 10000);
 
-  final requests = <List<int>>[];
+  final requests = <List<Object>>[];
 
   @override
   Future<List<RemoteImage>> listImages(
-      String date, int offset, dynamic maxReturn) async {
-    requests.add([offset, maxReturn as int]);
+      String date, int offset, dynamic maxReturn,
+      {String afterPath = ''}) async {
+    requests.add([date, offset, maxReturn as int, afterPath]);
     return List.generate(
       offset == 0 ? maxReturn : 2,
       (i) => RemoteImage(cli, '20261127/${offset + i}.jpg',
@@ -31,7 +32,8 @@ class _PagedStorage extends RemoteStorage {
 }
 
 void main() {
-  test('云端相册先显示首批 48 张，再按完整页大小请求', () async {
+  test('云端相册先显示首批，下一页从最后一天继续', () async {
+    SharedPreferences.setMockInitialValues({});
     final originalStorage = storageClient;
     final originalUseRemoteServer = useRemoteServer;
     final remote = _PagedStorage();
@@ -49,10 +51,12 @@ void main() {
 
     expect(await model.getRemotePhotos(), isTrue);
     expect(remote.requests, [
-      [0, 48],
-      [48, model.pageSize],
+      ['', 0, 48, '']
     ]);
     expect(visibleCounts, contains(48));
+    expect(await model.getRemotePhotos(), isTrue);
+    expect(remote.requests.last,
+        ['2026:11:27', 48, model.pageSize, '20261127/47.jpg']);
     expect(model.remoteAssets.length, 50);
   });
 
@@ -90,8 +94,7 @@ void main() {
       expect(accumulatedIDs.length, 3);
     });
 
-    test('accumulatedIDs 模式重复 ID 正常追加（去重在 setSyncedPhotos 调用方执行）',
-        () async {
+    test('accumulatedIDs 模式重复 ID 正常追加（去重在 setSyncedPhotos 调用方执行）', () async {
       state.setSyncedPhotos(['old_1']);
       final accumulatedIDs = <String>[];
       final stream = _mockResponseStream([
@@ -107,7 +110,7 @@ void main() {
       expect(accumulatedIDs.length, 3);
     });
 
-    test('accumulatedIDs 模式遇到错误时不中断，继续处理后续响应', () async {
+    test('accumulatedIDs 模式遇到错误时停止，保留已同步状态', () async {
       state.setSyncedPhotos(['old']);
       final accumulatedIDs = <String>[];
       final stream = _mockResponseStream([
@@ -121,10 +124,12 @@ void main() {
         ),
       ]);
 
-      await receiveResponses(stream, accumulatedIDs: accumulatedIDs);
+      await expectLater(
+          receiveResponses(stream, accumulatedIDs: accumulatedIDs),
+          throwsStateError);
 
       expect(state.syncedIDs, ['old']);
-      expect(accumulatedIDs, ['ok_id']);
+      expect(accumulatedIDs, isEmpty);
     });
   });
 

@@ -2,7 +2,7 @@ package api
 
 import (
 	"fmt"
-	"path/filepath"
+	"path"
 	"strings"
 )
 
@@ -12,7 +12,7 @@ func sanitizePath(name string) (string, error) {
 	if name == "" {
 		return "", fmt.Errorf("empty path")
 	}
-	if filepath.IsAbs(name) {
+	if strings.HasPrefix(name, "/") || (len(name) >= 2 && name[1] == ':') {
 		return "", fmt.Errorf("absolute path not allowed: %s", name)
 	}
 	if strings.Contains(name, "\\") {
@@ -21,7 +21,7 @@ func sanitizePath(name string) (string, error) {
 	if name == "." || strings.HasPrefix(name, "./") {
 		return "", fmt.Errorf("invalid path: %s", name)
 	}
-	cleaned := filepath.Clean(name)
+	cleaned := path.Clean(name)
 	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
 		return "", fmt.Errorf("path traversal not allowed: %s", name)
 	}

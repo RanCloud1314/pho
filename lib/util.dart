@@ -134,7 +134,8 @@ Future<void> keepScreenOn(bool on) async {
 Future<bool> isValidImage(Uint8List imageData) async {
   try {
     final ui.Codec codec = await ui.instantiateImageCodec(imageData);
-    return codec != null;
+    codec.dispose();
+    return true;
   } catch (e) {
     return false;
   }

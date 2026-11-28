@@ -76,13 +76,15 @@ const ListByDateRequest$json = {
     {'1': 'date', '3': 1, '4': 1, '5': 9, '10': 'date'},
     {'1': 'offset', '3': 2, '4': 1, '5': 5, '10': 'offset'},
     {'1': 'maxReturn', '3': 3, '4': 1, '5': 5, '10': 'maxReturn'},
+    {'1': 'afterPath', '3': 4, '4': 1, '5': 9, '10': 'afterPath'},
   ],
 };
 
 /// Descriptor for `ListByDateRequest`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List listByDateRequestDescriptor = $convert.base64Decode(
     'ChFMaXN0QnlEYXRlUmVxdWVzdBISCgRkYXRlGAEgASgJUgRkYXRlEhYKBm9mZnNldBgCIAEoBV'
-    'IGb2Zmc2V0EhwKCW1heFJldHVybhgDIAEoBVIJbWF4UmV0dXJu');
+    'IGb2Zmc2V0EhwKCW1heFJldHVybhgDIAEoBVIJbWF4UmV0dXJuEhwKCWFmdGVyUGF0aBgEIAEo'
+    'CVIJYWZ0ZXJQYXRo');
 
 @$core.Deprecated('Use listByDateResponseDescriptor instead')
 const ListByDateResponse$json = {

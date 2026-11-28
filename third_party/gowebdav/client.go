@@ -2,6 +2,7 @@ package gowebdav
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -377,20 +378,27 @@ func (c *Client) ReadStream(path string) (io.ReadCloser, error) {
 // size parsed from the Content-Length response header. Returns -1 if
 // the header is absent or unparsable.
 func (c *Client) ReadStreamSized(path string) (io.ReadCloser, int64, error) {
-	rs, err := c.req("GET", path, nil, 0, nil)
+	return c.ReadStreamSizedContext(context.Background(), path)
+}
+
+func (c *Client) ReadStreamSizedContext(ctx context.Context, path string) (io.ReadCloser, int64, error) {
+	rs, err := c.req("GET", path, nil, 0, func(r *http.Request) { *r = *r.WithContext(ctx) })
 	if err != nil {
+		if rs != nil {
+			rs.Body.Close()
+		}
 		return nil, -1, newPathErrorErr("ReadStreamSized", path, err)
 	}
 
 	if rs.StatusCode == 200 {
 		return rs.Body, parseContentLength(rs), nil
 	}
+	defer rs.Body.Close()
 	body, err := ioutil.ReadAll(rs.Body)
 	if err != nil {
 		return nil, -1, err
 	}
 
-	rs.Body.Close()
 	return nil, -1, fmt.Errorf("ReadStreamSized %s: %s", path, body)
 }
 
@@ -445,7 +453,12 @@ func (c *Client) ReadStreamRange(path string, offset, length int64) (io.ReadClos
 // (bytes start-end/total); for 200 fallback it comes from
 // Content-Length. Returns -1 if neither is usable.
 func (c *Client) ReadStreamRangeSized(path string, offset, length int64) (io.ReadCloser, int64, error) {
+	return c.ReadStreamRangeSizedContext(context.Background(), path, offset, length)
+}
+
+func (c *Client) ReadStreamRangeSizedContext(ctx context.Context, path string, offset, length int64) (io.ReadCloser, int64, error) {
 	rs, err := c.req("GET", path, nil, 0, func(r *http.Request) {
+		*r = *r.WithContext(ctx)
 		if length > 0 {
 			r.Header.Add("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+length-1))
 		} else {
@@ -453,6 +466,9 @@ func (c *Client) ReadStreamRangeSized(path string, offset, length int64) (io.Rea
 		}
 	})
 	if err != nil {
+		if rs != nil {
+			rs.Body.Close()
+		}
 		return nil, -1, newPathErrorErr("ReadStreamRangeSized", path, err)
 	}
 
@@ -463,16 +479,20 @@ func (c *Client) ReadStreamRangeSized(path string, offset, length int64) (io.Rea
 	if rs.StatusCode == 200 {
 		totalSize := parseContentLength(rs)
 		if _, err := io.Copy(io.Discard, io.LimitReader(rs.Body, offset)); err != nil {
+			rs.Body.Close()
 			return nil, -1, newPathErrorErr("ReadStreamRangeSized", path, err)
+		}
+		if length < 0 {
+			return rs.Body, totalSize, nil
 		}
 		return &limitedReadCloser{rs.Body, int(length)}, totalSize, nil
 	}
+	defer rs.Body.Close()
 	body, err := ioutil.ReadAll(rs.Body)
 	if err != nil {
 		return nil, -1, err
 	}
 
-	rs.Body.Close()
 	return nil, -1, fmt.Errorf("ReadStreamRangeSized %s: %s", path, body)
 }
 

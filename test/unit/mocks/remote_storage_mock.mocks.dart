@@ -81,8 +81,9 @@ class MockRemoteStorageClient extends _i1.Mock
   _i4.Future<List<_i7.RemoteImage>> listImages(
     String? date,
     int? offset,
-    dynamic maxReturn,
-  ) =>
+    dynamic maxReturn, {
+    String? afterPath,
+  }) =>
       (super.noSuchMethod(
         Invocation.method(
           #listImages,
@@ -91,6 +92,7 @@ class MockRemoteStorageClient extends _i1.Mock
             offset,
             maxReturn,
           ],
+          {#afterPath: afterPath},
         ),
         returnValue:
             _i4.Future<List<_i7.RemoteImage>>.value(<_i7.RemoteImage>[]),

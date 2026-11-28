@@ -215,7 +215,8 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
       lastAliveTime = null;
       checkServer().then((_) {
         if (settingModel.isRemoteStorageSetted) {
-          eventBus.fire(RemoteRefreshEvent(refreshUnSync: false));
+          eventBus
+              .fire(RemoteRefreshEvent(refreshUnSync: false, preserve: true));
         }
       });
     }
@@ -302,4 +303,3 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
         : const DesktopHomePage();
   }
 }
-

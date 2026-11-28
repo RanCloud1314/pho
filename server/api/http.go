@@ -79,13 +79,13 @@ func (a *api) httpUpload(w http.ResponseWriter, r *http.Request) {
 		dateTime = time.Now()
 	}
 	name := strings.TrimPrefix(path, "/")
-		name, err = sanitizePath(name)
-		if err != nil {
-			http.Error(w, "invalid path", http.StatusBadRequest)
-			return
-		}
-		r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
-		err = a.im.Upload(r.Body, length, encodeName(dateTime, name), dateTime, imgmanager.WithEncrypt(imgmanager.EncryptOption{
+	name, err = sanitizePath(name)
+	if err != nil {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
+	err = a.im.Upload(r.Body, length, encodeName(dateTime, name), dateTime, imgmanager.WithEncrypt(imgmanager.EncryptOption{
 		Type:     enctype,
 		Password: encPassword,
 	}), imgmanager.IsLivePhoto(isLivePhoto))
@@ -115,12 +115,12 @@ func (a *api) httpUploadThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimPrefix(path, "/thumbnail/")
-		name, err := sanitizePath(name)
-		if err != nil {
-			http.Error(w, "invalid path", http.StatusBadRequest)
-			return
-		}
-		date := r.Header.Get(HeaderDate)
+	name, err := sanitizePath(name)
+	if err != nil {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	date := r.Header.Get(HeaderDate)
 	enctype := getEncryptType(r.Header.Get(HeaderEncryptType))
 	encPassword := r.Header.Get(HeaderEncryptPassword)
 	isLivePhotoStr := r.Header.Get(HeaderIsLivePhoto)
@@ -163,12 +163,12 @@ func (a *api) httpUploadLiveVideo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimPrefix(path, "/live/")
-		name, err := sanitizePath(name)
-		if err != nil {
-			http.Error(w, "invalid path", http.StatusBadRequest)
-			return
-		}
-		date := r.Header.Get(HeaderDate)
+	name, err := sanitizePath(name)
+	if err != nil {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	date := r.Header.Get(HeaderDate)
 	enctype := getEncryptType(r.Header.Get(HeaderEncryptType))
 	encPassword := r.Header.Get(HeaderEncryptPassword)
 	length := r.ContentLength
@@ -218,13 +218,13 @@ func (a *api) httpDownload(w http.ResponseWriter, r *http.Request) {
 		path = strings.TrimPrefix(path, "/live")
 	}
 	path = strings.TrimPrefix(path, "/")
-		cleaned, err := sanitizePath(path)
-		if err != nil {
-			http.Error(w, "invalid path", http.StatusBadRequest)
-			return
-		}
-		path = cleaned
-		enctype := getEncryptType(r.Header.Get(HeaderEncryptType))
+	cleaned, err := sanitizePath(path)
+	if err != nil {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+	path = cleaned
+	enctype := getEncryptType(r.Header.Get(HeaderEncryptType))
 	encPassword := r.Header.Get(HeaderEncryptPassword)
 	rangeHeader := r.Header.Get("Range")
 	if rangeHeader != "" {
@@ -252,17 +252,28 @@ func (a *api) httpDownload(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid range start", http.StatusBadRequest)
 			return
 		}
+		end := int64(-1)
+		if len(parts) != 2 {
+			http.Error(w, "bad range", http.StatusBadRequest)
+			return
+		}
+		if parts[1] != "" {
+			end, err = strconv.ParseInt(parts[1], 10, 64)
+			if err != nil || end < start {
+				http.Error(w, "invalid range end", http.StatusBadRequest)
+				return
+			}
+		}
+		request := imgmanager.WithMediaRequest(r.Context(), end)
 		var img *imgmanager.Image
 		switch downloadType {
 		case downloadTypeNormal:
-			img, err = a.im.GetOffset(path, start, imgmanager.WithEncrypt(imgmanager.EncryptOption{
-				Type:     enctype,
-				Password: encPassword,
+			img, err = a.im.GetOffset(path, start, request, imgmanager.WithEncrypt(imgmanager.EncryptOption{
+				Type: enctype, Password: encPassword,
 			}))
 		case downloadTypeLiveVideo:
-			img, err = a.im.GetLiveVideoOffset(path, start, imgmanager.WithEncrypt(imgmanager.EncryptOption{
-				Type:     enctype,
-				Password: encPassword,
+			img, err = a.im.GetLiveVideoOffset(path, start, request, imgmanager.WithEncrypt(imgmanager.EncryptOption{
+				Type: enctype, Password: encPassword,
 			}))
 		case downloadTypeThumbnail:
 			http.Error(w, "Not support Range", http.StatusBadRequest)
@@ -273,23 +284,15 @@ func (a *api) httpDownload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer img.Content.Close()
-		var readLen int64 = img.Size - start
-		end := img.Size - 1
-		if len(parts) > 1 && parts[1] != "" {
-			end, err = strconv.ParseInt(parts[1], 10, 64) // 解析 end 部分
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			if end < 0 {
-				http.Error(w, "invalid range end", http.StatusBadRequest)
-				return
-			}
-			if end > img.Size-1 {
-				end = img.Size - 1
-			}
-			readLen = end - start + 1
+		if start >= img.Size {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", img.Size))
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			return
 		}
+		if end < 0 || end >= img.Size {
+			end = img.Size - 1
+		}
+		readLen := end - start + 1
 		w.Header().Add("Content-Type", img.ContentType)
 		w.Header().Add("Content-Length", strconv.FormatInt(readLen, 10))
 		w.Header().Add("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, img.Size))
@@ -304,20 +307,21 @@ func (a *api) httpDownload(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	request := imgmanager.WithMediaRequest(r.Context(), -1)
 	var img *imgmanager.Image
 	switch downloadType {
 	case downloadTypeNormal:
-		img, err = a.im.GetImg(path, imgmanager.WithEncrypt(imgmanager.EncryptOption{
+		img, err = a.im.GetImg(path, request, imgmanager.WithEncrypt(imgmanager.EncryptOption{
 			Type:     enctype,
 			Password: encPassword,
 		}))
 	case downloadTypeThumbnail:
-		img, err = a.im.GetThumbnail(path, imgmanager.WithEncrypt(imgmanager.EncryptOption{
+		img, err = a.im.GetThumbnail(path, request, imgmanager.WithEncrypt(imgmanager.EncryptOption{
 			Type:     enctype,
 			Password: encPassword,
 		}))
 	case downloadTypeLiveVideo:
-		img, err = a.im.GetLiveVideoOffset(path, 0, imgmanager.WithEncrypt(imgmanager.EncryptOption{
+		img, err = a.im.GetLiveVideoOffset(path, 0, request, imgmanager.WithEncrypt(imgmanager.EncryptOption{
 			Type:     enctype,
 			Password: encPassword,
 		}))
@@ -333,7 +337,7 @@ func (a *api) httpDownload(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, err = io.Copy(w, img.Content)
 	if err != nil {
-		w.Write([]byte(err.Error()))
+		log.Printf("Error copying image content: %v", err)
 		return
 	}
 }

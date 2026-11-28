@@ -54,6 +54,7 @@ message ListByDateRequest {
   string date = 1; // YYYY:MM:DD
   int32 offset = 2;
   int32 maxReturn = 3;
+  string afterPath = 4; // path of the last item on date
 }
 message ListByDateResponse {
   bool success = 1;

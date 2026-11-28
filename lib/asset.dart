@@ -36,6 +36,7 @@ class Asset extends ImageProvider<Asset> {
   bool _isDataValid = true;
   Duration? _cachedDuration;
   bool _durationLoading = false;
+
   /// 原图加载进度 (0.0~1.0), -1 表示未在加载/已完成
   final ValueNotifier<double> imageLoadProgress = ValueNotifier<double>(-1);
 
@@ -149,17 +150,20 @@ class Asset extends ImageProvider<Asset> {
     }
   }
 
-  DateTime dateCreated() {
+  static final _nestedDate = RegExp(r'^(\d{4})/(\d{2})/(\d{2})/');
+  static final _flatDate = RegExp(r'^(\d{4})(\d{2})(\d{2})/');
+  late final DateTime _created = _readDate();
+  DateTime dateCreated() => _created;
+
+  DateTime _readDate() {
     if (hasLocal) {
       return local!.createDateTime;
     }
     if (hasRemote) {
       final filePath = remote!.path;
-      var format1 = RegExp(r'^(\d{4})/(\d{2})/(\d{2})/');
-      var format2 = RegExp(r'^(\d{4})(\d{2})(\d{2})/');
 
       // Check if file path matches the first format.
-      var match = format1.firstMatch(filePath);
+      var match = _nestedDate.firstMatch(filePath);
       if (match != null) {
         var year = match.group(1);
         var month = match.group(2);
@@ -168,7 +172,7 @@ class Asset extends ImageProvider<Asset> {
       }
 
       // Check if file path matches the second format.
-      match = format2.firstMatch(filePath);
+      match = _flatDate.firstMatch(filePath);
       if (match != null) {
         var year = match.group(1);
         var month = match.group(2);
@@ -212,18 +216,17 @@ class Asset extends ImageProvider<Asset> {
       }
       _durationLoading = true;
       try {
-        var uri = remote!.path;
-        if (uri[0] != '/') {
-          uri = "/$uri";
-        }
-        final url = "$httpBaseUrl$uri";
         final controller = VideoPlayerController.networkUrl(
-          Uri.parse(url),
+          remote!.mediaUri(),
+          httpHeaders: remoteMediaHeaders(),
         );
-        await controller.initialize();
-        _cachedDuration = controller.value.duration;
-        controller.dispose();
-        return _cachedDuration ?? Duration.zero;
+        try {
+          await controller.initialize();
+          _cachedDuration = controller.value.duration;
+          return _cachedDuration ?? Duration.zero;
+        } finally {
+          await controller.dispose();
+        }
       } catch (e) {
         logger.addLog("Failed to get remote video duration: $e");
         return Duration.zero;
@@ -252,13 +255,11 @@ class Asset extends ImageProvider<Asset> {
       }
     }
     if (hasRemote) {
-      var uri = remote!.path;
-      if (uri[0] != '/') {
-        uri = "/$uri";
-      }
-      final url = "$httpBaseUrl/live$uri";
-      final controller = VideoPlayerController.network(url);
-      return controller;
+      await checkServer();
+      return VideoPlayerController.networkUrl(
+        remote!.mediaUri(prefix: 'live'),
+        httpHeaders: remoteMediaHeaders(),
+      );
     }
     return null;
   }
@@ -281,7 +282,7 @@ class Asset extends ImageProvider<Asset> {
         .image;
   }
 
-  Future<Uint8List> thumbnailDataAsync() async {
+  Future<Uint8List> thumbnailDataAsync({Future<void>? cancel}) async {
     if (_thumbnailData != null) {
       return _thumbnailData!;
     }
@@ -295,22 +296,34 @@ class Asset extends ImageProvider<Asset> {
     final completer = Completer<Uint8List>();
     _thumbnailDataCompleter = completer;
     Uint8List? data;
-    if (hasLocal) {
-      data = await local!
-          .thumbnailDataWithSize(const ThumbnailSize.square(200), quality: 80);
+    var cancelled = false;
+    cancel?.then((_) => cancelled = true);
+    try {
+      if (hasLocal) {
+        data = await local!.thumbnailDataWithSize(
+          const ThumbnailSize.square(200),
+          quality: 80,
+        );
+      }
+      if (hasRemote) {
+        data = await remote!.thumbnail(cancel: cancel);
+      }
+    } catch (e) {
+      logger.addLog('Thumbnail load failed: $e');
     }
-    if (hasRemote) {
-      data = await remote!.thumbnail();
-    }
-    // 失败或不可解码的缩略图不写入缓存，5 秒后允许重试（issue #89）
-    if (data == null || data.isEmpty || !await isValidImage(data)) {
-      _isThumbnailDataValid = false;
-      _thumbnailLoadFailed = true;
-      _thumbnailRetryAfter = DateTime.now().add(const Duration(seconds: 5));
+    if (cancelled ||
+        data == null ||
+        data.isEmpty ||
+        (!hasRemote && !await isValidImage(data))) {
+      if (!cancelled) {
+        _isThumbnailDataValid = false;
+        _thumbnailLoadFailed = true;
+        _thumbnailRetryAfter = DateTime.now().add(const Duration(seconds: 5));
+      }
+      final broken = await _loadBrokenThumbnail();
       if (identical(_thumbnailDataCompleter, completer)) {
         _thumbnailDataCompleter = null;
       }
-      final broken = await _loadBrokenThumbnail();
       completer.complete(broken);
       return broken;
     }
@@ -330,6 +343,17 @@ class Asset extends ImageProvider<Asset> {
     return broken.buffer.asUint8List();
   }
 
+  Completer<void>? _imageCancel;
+
+  void releaseRemoteImage() {
+    if (!hasRemote) return;
+    _imageCancel?.complete();
+    _imageCancel = null;
+    _data = null;
+    _dataAsyncCompleter = null;
+    evict().ignore();
+  }
+
   Future<Uint8List> imageDataAsync({bool reportProgress = false}) async {
     if (_data != null) {
       return _data!;
@@ -337,9 +361,13 @@ class Asset extends ImageProvider<Asset> {
     if (_dataAsyncCompleter != null) {
       return _dataAsyncCompleter!.future;
     }
-    _dataAsyncCompleter = Completer<Uint8List>();
+    final completer = Completer<Uint8List>();
+    _dataAsyncCompleter = completer;
+    final cancel = Completer<void>();
+    _imageCancel = cancel;
     // 非下载场景通过 imageLoadProgress 轻量通知进度，不触发 notifyListeners
-    final bool useLightProgress = !reportProgress && hasRemote && !remote!.isVideo();
+    final bool useLightProgress =
+        !reportProgress && hasRemote && !remote!.isVideo();
     if (useLightProgress) {
       imageLoadProgress.value = 0;
     }
@@ -357,6 +385,7 @@ class Asset extends ImageProvider<Asset> {
         if (!remote!.isVideo()) {
           data = await remote!.imageData(
             reportProgress: reportProgress,
+            cancel: cancel.future,
             onProgress: useLightProgress
                 ? (downloaded, total) {
                     if (total > 0) {
@@ -372,16 +401,21 @@ class Asset extends ImageProvider<Asset> {
     } catch (e) {
       logger.addLog("Get image data failed: $e");
     }
-    if (useLightProgress) {
+    if (identical(_imageCancel, cancel)) _imageCancel = null;
+    if (useLightProgress && identical(_dataAsyncCompleter, completer)) {
       imageLoadProgress.value = 1;
     }
     if (data == null || data.isEmpty) {
       final brokenData = await rootBundle.load("assets/images/broken.png");
-      _dataAsyncCompleter!.complete(brokenData.buffer.asUint8List());
+      completer.complete(brokenData.buffer.asUint8List());
+      if (identical(_dataAsyncCompleter, completer)) _dataAsyncCompleter = null;
       return brokenData.buffer.asUint8List();
     } else {
-      _dataAsyncCompleter!.complete(data);
-      _data = data;
+      completer.complete(data);
+      if (identical(_dataAsyncCompleter, completer)) {
+        _data = data;
+        _dataAsyncCompleter = null;
+      }
       return data;
     }
   }
@@ -391,16 +425,16 @@ class Asset extends ImageProvider<Asset> {
       final file = await local!.originFile;
       return file!.path;
     } else {
-      final stream = remote!.dataStream();
       final directory = await getTemporaryDirectory();
-      final filePath = '${directory.path}/${originName()}';
-      final file = File(filePath);
-      final fileStream = file.openWrite();
-      await for (var data in stream) {
-        fileStream.add(data);
+      final temp = await directory.createTemp('pho-media-');
+      final file = File(join(temp.path, basename(await originName())));
+      try {
+        await remote!.saveTo(file);
+        return file.path;
+      } catch (_) {
+        await temp.delete(recursive: true);
+        rethrow;
       }
-      await fileStream.close();
-      return filePath;
     }
   }
 

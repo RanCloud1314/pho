@@ -38,6 +38,7 @@ class GalleryViewerRouteState extends State<GalleryViewerRoute>
   late final ExtendedPageController _pageController;
   late AnimationController _animationController;
   bool showLivePhotoVideo = false;
+  bool _playingLivePhoto = false;
   bool showLoading = false;
   VideoPlayerController? _videoController;
   late List<Asset> all;
@@ -95,6 +96,10 @@ class GalleryViewerRouteState extends State<GalleryViewerRoute>
       _animationController.removeListener(_doubleTapListener!);
       _doubleTapListener = null;
     }
+    for (final index in [currentIndex - 1, currentIndex, currentIndex + 1]) {
+      if (index >= 0 && index < all.length) all[index].releaseRemoteImage();
+    }
+    _videoController?.dispose();
     _animationController.dispose();
     _pageController.dispose();
     super.dispose();
@@ -325,19 +330,13 @@ class GalleryViewerRouteState extends State<GalleryViewerRoute>
     await keepScreenOn(true);
     final name = await asset.originName();
     try {
-      Uint8List data;
-      if (!asset.isVideo()) {
-        data = await asset.imageDataAsync(reportProgress: true);
-      } else {
-        data = await asset.remote!.imageData();
-      }
       if (Platform.isAndroid) {
         String absPath = '${settingModel.localFolderAbsPath}/$name';
         final file = File(absPath);
         if (file.existsSync()) {
           throw Exception("$name already exists, skip download.");
         }
-        await file.writeAsBytes(data);
+        await asset.remote!.saveTo(file);
         await file.setLastModified(asset.dateCreated());
         await scanFile(absPath);
         SnackBarManager.showSnackBar("${l10n.download} $name ${l10n.success}");
@@ -348,7 +347,7 @@ class GalleryViewerRouteState extends State<GalleryViewerRoute>
         // if (file.existsSync()) {
         //   throw Exception("$name already exists, skip download.");
         // }
-        await file.writeAsBytes(data);
+        await asset.remote!.saveTo(file);
         await file.setLastModified(asset.dateCreated());
         if (asset.isVideo()) {
           await Gal.putVideo(savePath);
@@ -366,7 +365,7 @@ class GalleryViewerRouteState extends State<GalleryViewerRoute>
           return;
         }
         final file = File(outputFile);
-        await file.writeAsBytes(data);
+        await asset.remote!.saveTo(file);
         SnackBarManager.showSnackBar("${l10n.download} $name ${l10n.success}");
       }
       eventBus.fire(LocalRefreshEvent(refreshUnSync: false));
@@ -552,19 +551,20 @@ class GalleryViewerRouteState extends State<GalleryViewerRoute>
                 itemCount: all.length,
                 controller: _pageController,
                 onPageChanged: (int index) {
-                  setState(() {
-                    currentIndex = index;
-                  });
-                  all[index].readInfoFromData().then((value) {
-                    if (index + 1 >= 0 && index + 1 < all.length) {
-                      all[index + 1].thumbnailDataAsync();
-                      all[index + 1].imageDataAsync();
+                  final previous = currentIndex;
+                  setState(() => currentIndex = index);
+                  for (final candidate in [
+                    previous - 1,
+                    previous,
+                    previous + 1
+                  ]) {
+                    if (candidate >= 0 &&
+                        candidate < all.length &&
+                        (candidate - index).abs() > 1) {
+                      all[candidate].releaseRemoteImage();
                     }
-                    if (index - 1 >= 0 && index - 1 < all.length) {
-                      all[index - 1].thumbnailDataAsync();
-                      all[index - 1].imageDataAsync();
-                    }
-                  });
+                  }
+                  all[index].readInfoFromData();
                 },
                 itemBuilder: (BuildContext context, int index) {
                   return Stack(
@@ -607,7 +607,8 @@ class GalleryViewerRouteState extends State<GalleryViewerRoute>
                                 image: all[index].thumbnailProvider(),
                                 fit: BoxFit.contain,
                               );
-                              if (!all[index].hasRemote || all[index].isVideo()) {
+                              if (!all[index].hasRemote ||
+                                  all[index].isVideo()) {
                                 return thumbnail;
                               }
                               return Stack(
@@ -729,35 +730,45 @@ class GalleryViewerRouteState extends State<GalleryViewerRoute>
                           }
                         },
                         onLongPress: () async {
-                          if (!all[index].isLivePhoto()) {
-                            return;
-                          }
-                          _videoController =
-                              await all[index].getLivePhotoVideoController();
-                          if (_videoController == null) {
-                            return;
-                          }
+                          if (!all[index].isLivePhoto()) return;
+                          _playingLivePhoto = true;
+                          VideoPlayerController? player;
                           try {
-                            await _videoController!.initialize();
+                            player =
+                                await all[index].getLivePhotoVideoController();
+                            if (player == null) return;
+                            if (!mounted || !_playingLivePhoto) {
+                              await player.dispose();
+                              return;
+                            }
+                            _videoController = player;
+                            await player.initialize();
+                            if (!mounted ||
+                                !identical(_videoController, player)) return;
                             HapticFeedback.lightImpact();
-                            await _videoController!.play();
-                            setState(() {
-                              showLivePhotoVideo = true;
-                            });
+                            await player.play();
+                            if (mounted &&
+                                identical(_videoController, player)) {
+                              setState(() => showLivePhotoVideo = true);
+                            }
                           } catch (e) {
-                            SnackBarManager.showSnackBar(
-                                "Play live photo failed: $e");
+                            if (player != null &&
+                                identical(_videoController, player)) {
+                              _videoController = null;
+                              await player.dispose();
+                            }
+                            if (mounted && _playingLivePhoto) {
+                              SnackBarManager.showSnackBar(
+                                  "Play live photo failed: $e");
+                            }
                           }
                         },
-                        onLongPressEnd: (details) {
-                          setState(() {
-                            showLivePhotoVideo = false;
-                          });
-                          if (_videoController != null) {
-                            _videoController!.pause();
-                            _videoController!.dispose();
-                            _videoController = null;
-                          }
+                        onLongPressEnd: (_) {
+                          _playingLivePhoto = false;
+                          final player = _videoController;
+                          _videoController = null;
+                          player?.dispose();
+                          setState(() => showLivePhotoVideo = false);
                         },
                       ),
                       Center(

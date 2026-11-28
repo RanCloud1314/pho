@@ -51,6 +51,15 @@ class LocateInfo {
   int count;
 }
 
+enum _GalleryRowKind { month, day, photos }
+
+class _GalleryRow {
+  const _GalleryRow(this.start, this.end, this.kind);
+  final int start;
+  final int end;
+  final _GalleryRowKind kind;
+}
+
 class GalleryBodyState extends State<GalleryBody>
     with AutomaticKeepAliveClientMixin {
   bool _showToTopBtn = false;
@@ -59,7 +68,6 @@ class GalleryBodyState extends State<GalleryBody>
   final ScrollController _scrollController = ScrollController();
   final _scrollSubject = PublishSubject<double>();
   int columCount = 4;
-  double scrollOffset = 0;
   double maxScrollOffset = 0;
   bool dragging = false;
 
@@ -77,17 +85,6 @@ class GalleryBodyState extends State<GalleryBody>
   @override
   void initState() {
     super.initState();
-    _scrollSubject.stream
-        .debounceTime(const Duration(milliseconds: 150))
-        .listen((scrollPosition) {
-      if (_scrollController.position.pixels >=
-          _scrollController.position.maxScrollExtent - 4000) {
-        // getPhotos();
-      }
-      setState(() {
-        scrollOffset = scrollPosition;
-      });
-    });
     _scrollSubject.stream.listen((scrollPosition) {
       if (dragging) {
         return;
@@ -114,6 +111,13 @@ class GalleryBodyState extends State<GalleryBody>
     });
     _scrollController.addListener(() {
       _scrollSubject.add(_scrollController.position.pixels);
+      if (!widget.useLocal &&
+          settingModel.isRemoteStorageSetted &&
+          !stateModel.isSelectionMode &&
+          _scrollController.position.extentAfter < 600) {
+        final model = context.read<AssetModel>();
+        if (model.remoteLastError == null) unawaited(model.getRemotePhotos());
+      }
       if (_scrollController.offset > 1000 && !_showToTopBtn) {
         setState(() {
           _showToTopBtn = true;
@@ -176,12 +180,15 @@ class GalleryBodyState extends State<GalleryBody>
       return;
     }
     _isRefreshing = true;
-    if (widget.useLocal) {
-      assetModel.refreshLocal(false);
-    } else {
-      assetModel.refreshRemote(false);
+    try {
+      if (widget.useLocal) {
+        await context.read<AssetModel>().refreshLocal(false);
+      } else {
+        await context.read<AssetModel>().refreshRemote(false);
+      }
+    } finally {
+      _isRefreshing = false;
     }
-    _isRefreshing = false;
   }
 
   void toggleSelection(int index) {
@@ -336,12 +343,6 @@ class GalleryBodyState extends State<GalleryBody>
         }
       }
       for (var asset in assets) {
-        Uint8List data;
-        if (!asset.isVideo()) {
-          data = await asset.imageDataAsync(reportProgress: true);
-        } else {
-          data = await asset.remote!.imageData();
-        }
         final name = await asset.originName();
         if (Platform.isAndroid) {
           String absPath = '${settingModel.localFolderAbsPath}/$name';
@@ -349,7 +350,7 @@ class GalleryBodyState extends State<GalleryBody>
           if (file.existsSync()) {
             throw Exception("$name already exists, skip download.");
           }
-          await file.writeAsBytes(data);
+          await asset.remote!.saveTo(file);
           await file.setLastModified(asset.dateCreated());
           await scanFile(absPath);
         } else if (Platform.isIOS) {
@@ -359,13 +360,21 @@ class GalleryBodyState extends State<GalleryBody>
           // if (file.existsSync()) {
           //   throw Exception("$name already exists, skip download.");
           // }
-          await file.writeAsBytes(data);
-          await file.setLastModified(asset.dateCreated());
-          await Gal.putImage(savePath);
+          await asset.remote!.saveTo(file);
+          try {
+            await file.setLastModified(asset.dateCreated());
+            if (asset.isVideo()) {
+              await Gal.putVideo(savePath);
+            } else {
+              await Gal.putImage(savePath);
+            }
+          } finally {
+            await file.delete();
+          }
         } else if (isDesktop()) {
           String absPath = '$path/$name';
           final file = File(absPath);
-          await file.writeAsBytes(data);
+          await asset.remote!.saveTo(file);
         }
         count++;
       }
@@ -881,156 +890,64 @@ class GalleryBodyState extends State<GalleryBody>
     );
   }
 
+  List<Asset>? _layoutAssets;
+  int _layoutLength = -1;
+  int _layoutColumns = 0;
+  double _layoutHeight = 0;
+  final _rows = <_GalleryRow>[];
+
+  void _updateLayout(List<Asset> all, double rowHeight) {
+    if (identical(_layoutAssets, all) &&
+        _layoutLength == all.length &&
+        _layoutColumns == columCount &&
+        _layoutHeight == rowHeight) return;
+    _layoutAssets = all;
+    _layoutLength = all.length;
+    _layoutColumns = columCount;
+    _layoutHeight = rowHeight;
+    _rows.clear();
+    _dateLocateMap = {};
+    var y = 0.0;
+    DateTime? previousDay;
+    var start = 0;
+    while (start < all.length) {
+      final day = all[start].dateCreated();
+      var end = start + 1;
+      while (end < all.length &&
+          DateUtils.isSameDay(day, all[end].dateCreated())) {
+        end++;
+      }
+      if (previousDay?.month != day.month || previousDay?.year != day.year) {
+        _rows.add(_GalleryRow(start, end, _GalleryRowKind.month));
+        y += 90;
+      }
+      _dateLocateMap[DateUtils.dateOnly(day)] =
+          LocateInfo(location: y, count: end - start);
+      _rows.add(_GalleryRow(start, end, _GalleryRowKind.day));
+      y += 55;
+      for (var index = start; index < end; index += columCount) {
+        final rowEnd = index + columCount < end ? index + columCount : end;
+        _rows.add(_GalleryRow(index, rowEnd, _GalleryRowKind.photos));
+        y += rowHeight;
+      }
+      previousDay = day;
+      start = end;
+    }
+    maxScrollOffset = y;
+  }
+
   Widget contentBuilder(BuildContext context, AssetModel model, Widget? child) {
     final colorScheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
     final localeCode = Localizations.localeOf(context).languageCode;
-    Color textColor = colorScheme.onSurfaceVariant;
-    _dateLocateMap = {};
     final all = widget.useLocal ? model.localAssets : model.remoteAssets;
-    var children = <Widget>[];
-    double totalwidth;
-    if (widget.width == null) {
-      totalwidth = MediaQuery.of(context).size.width - columCount * 2;
-    } else {
-      totalwidth = widget.width! - columCount * 2;
-    }
-    final totalHeight = MediaQuery.of(context).size.height;
-    final imgWidth = totalwidth / columCount;
+    final imgWidth = ((widget.width ?? MediaQuery.sizeOf(context).width) -
+            (columCount - 1) * 2) /
+        columCount;
     final imgHeight = imgWidth;
+    _updateLayout(all, imgHeight + 2);
 
-    var currentChildren = <Widget>[];
-    DateTime? currentDateTime;
-    DateTime? preDateTime;
-    double currentScrollOffset = 0;
-    for (int i = 0; i < all.length; i++) {
-      final date = all[i].dateCreated();
-      if (currentDateTime == null ||
-          date.year != currentDateTime.year ||
-          date.month != currentDateTime.month ||
-          date.day != currentDateTime.day) {
-        if (currentDateTime != null) {
-          final currentChildrenLength = currentChildren.length;
-          bool selectedAll = true;
-          for (int j = i - 1; i - j <= currentChildrenLength; j--) {
-            if (!_selectedIndices.containsKey(j) || !_selectedIndices[j]!) {
-              selectedAll = false;
-              break;
-            }
-          }
-          DateFormat format = localeCode == 'zh'
-              ? DateFormat('M月d日 EEE', 'zh')
-              : DateFormat('EEE, MMM d', 'en');
-          children.add(GestureDetector(
-            child: Container(
-              height: 55,
-              padding: const EdgeInsets.fromLTRB(
-                  AppSpacing.md, AppSpacing.md, 0, AppSpacing.md),
-              child: Row(
-                children: [
-                  Text(
-                    format.format(currentDateTime),
-                    style: textTheme.titleMedium?.copyWith(
-                      color: textColor,
-                    ),
-                  ),
-                  Expanded(
-                      child: Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      Transform.scale(
-                        scale: 1.2,
-                        child: Checkbox(
-                            value: selectedAll,
-                            shape: RoundedRectangleBorder(
-                                borderRadius:
-                                    BorderRadius.circular(AppRadius.small)),
-                            onChanged: (isSelect) async {
-                              if (isSelect == null) {
-                                return;
-                              }
-                              if (isSelect) {
-                                for (int j = i - 1;
-                                    i - j <= currentChildrenLength;
-                                    j--) {
-                                  _selectedIndices[j] = true;
-                                }
-                              } else {
-                                for (int j = i - 1;
-                                    i - j <= currentChildrenLength;
-                                    j--) {
-                                  _selectedIndices.remove(j);
-                                }
-                              }
-                              HapticFeedback.lightImpact();
-                              updateSelection();
-                            }),
-                      ),
-                    ],
-                  )),
-                ],
-              ),
-            ),
-            onTap: () => showDateLocateDialog(),
-          ));
-        }
-
-        children.add(Wrap(
-          spacing: 2, // 主轴(水平)方向间距
-          runSpacing: 2.0, // 纵轴（垂直）方向间距
-          alignment: WrapAlignment.start,
-          children: currentChildren,
-        ));
-        if (preDateTime != null) {
-          _dateLocateMap[preDateTime]!.count = currentChildren.length;
-        }
-        currentScrollOffset -= 2;
-        _dateLocateMap[date] = LocateInfo(location: currentScrollOffset);
-        currentChildren = <Widget>[];
-        preDateTime = date;
-        if (currentDateTime == null || date.month != currentDateTime.month) {
-          children.add(
-            Container(
-              height: 90,
-              padding: const EdgeInsets.fromLTRB(
-                  AppSpacing.md, AppSpacing.xl, 0, AppSpacing.md),
-              child: Text.rich(
-                TextSpan(
-                  children: [
-                    TextSpan(
-                      text: localeCode == 'zh'
-                          ? '${DateFormat('M', 'zh').format(date)}  '
-                          : '${DateFormat('MMMM', 'en').format(date)} ',
-                      style: textTheme.headlineLarge?.copyWith(
-                        color: colorScheme.onSurface,
-                      ),
-                    ),
-                    TextSpan(
-                      text: DateFormat('yyyy').format(date),
-                      style: textTheme.headlineLarge?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                        fontWeight: FontWeight.w400,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          );
-          currentScrollOffset += 90;
-        }
-        currentScrollOffset += 55;
-      }
-      bool needLoadThumbnail = false;
-      if (currentScrollOffset > scrollOffset - (2 * totalHeight) &&
-          currentScrollOffset < scrollOffset + (3 * totalHeight)) {
-        needLoadThumbnail = true;
-        if (!all[i].loadThumbnailFinished()) {
-          all[i].thumbnailDataAsync().then((value) {
-            if (mounted) setState(() {});
-          });
-        }
-      }
+    Widget buildTile(int i) {
       var child = GestureDetector(
           onTap: () async {
             if (stateModel.isSelectionMode) {
@@ -1077,11 +994,8 @@ class GalleryBodyState extends State<GalleryBody>
                   child: Hero(
                     tag:
                         "asset_${all[i].hasLocal ? "local" : "remote"}_${all[i].hasLocal ? all[i].local!.id : all[i].remote!.path}",
-                    child: needLoadThumbnail && all[i].loadThumbnailFinished()
-                        ? Image(
-                            image: all[i].thumbnailProvider(),
-                            fit: BoxFit.cover)
-                        : ThumbnailSkeleton(),
+                    child: _GalleryThumbnail(
+                        key: ObjectKey(all[i]), asset: all[i]),
                     flightShuttleBuilder: (BuildContext flightContext,
                         Animation<double> animation,
                         HeroFlightDirection flightDirection,
@@ -1182,25 +1096,26 @@ class GalleryBodyState extends State<GalleryBody>
                   ),
                 ),
               // video icon
-              if (needLoadThumbnail && all[i].isVideo()) ...[
-                FutureBuilder(
-                    future: all[i].videoDuration(),
-                    builder: (context, snapshot) {
-                      if (snapshot.data == null ||
-                          snapshot.data == Duration.zero) {
-                        return const SizedBox(width: 0, height: 0);
-                      }
-                      final duration = snapshot.data!;
-                      return Positioned(
-                        top: 4,
-                        right: 28,
-                        child: Text(
-                          "${duration.inMinutes}:${(duration.inSeconds % 60).toString().padLeft(2, '0')}",
-                          style: textTheme.labelMedium
-                              ?.copyWith(color: Colors.white),
-                        ),
-                      );
-                    }),
+              if (all[i].isVideo()) ...[
+                if (all[i].hasLocal)
+                  FutureBuilder(
+                      future: all[i].videoDuration(),
+                      builder: (context, snapshot) {
+                        if (snapshot.data == null ||
+                            snapshot.data == Duration.zero) {
+                          return const SizedBox(width: 0, height: 0);
+                        }
+                        final duration = snapshot.data!;
+                        return Positioned(
+                          top: 4,
+                          right: 28,
+                          child: Text(
+                            "${duration.inMinutes}:${(duration.inSeconds % 60).toString().padLeft(2, '0')}",
+                            style: textTheme.labelMedium
+                                ?.copyWith(color: Colors.white),
+                          ),
+                        );
+                      }),
                 Positioned(
                   top: 4,
                   right: 4,
@@ -1246,138 +1161,128 @@ class GalleryBodyState extends State<GalleryBody>
               ]
             ],
           ));
-      currentChildren.add(child);
-      if (currentChildren.length % columCount == 1) {
-        currentScrollOffset += imgHeight + 2;
-      }
-      currentDateTime = all[i].dateCreated();
+      return child;
+    }
 
-      if (i == all.length - 1) {
-        final currentChildrenLength = currentChildren.length;
-        bool selectedAll = true;
-        for (int j = i; i - j < currentChildrenLength; j--) {
-          if (!_selectedIndices.containsKey(j) || !_selectedIndices[j]!) {
-            selectedAll = false;
-            break;
-          }
+    final loading = widget.useLocal
+        ? model.localGetting != null
+        : model.remoteGetting != null;
+    final canLoadMore = !widget.useLocal &&
+        model.remoteHasMore &&
+        settingModel.isRemoteStorageSetted;
+    final showFooter =
+        loading || canLoadMore || all.isEmpty || model.remoteLastError != null;
+    return SliverList.builder(
+      itemCount: _rows.length + (showFooter ? 1 : 0),
+      itemBuilder: (context, index) {
+        if (index == _rows.length) {
+          return Center(
+            child: loading
+                ? const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: CircularProgressIndicator(),
+                  )
+                : !widget.useLocal &&
+                        (canLoadMore || model.remoteLastError != null)
+                    ? TextButton(
+                        onPressed: () => model.getRemotePhotos(
+                          refresh: !model.remoteHasMore,
+                          preserve: true,
+                        ),
+                        child: Text(model.remoteLastError ??
+                            (localeCode == 'zh' ? '加载更多' : 'Load more')),
+                      )
+                    : SizedBox(
+                        height: 300,
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                                widget.useLocal
+                                    ? Icons.photo_library_outlined
+                                    : Icons.cloud_off_outlined,
+                                size: 64,
+                                color: colorScheme.onSurfaceVariant),
+                            const SizedBox(height: 16),
+                            Text(widget.useLocal
+                                ? l10n.noLocalPhotos
+                                : l10n.noCloudPhotos),
+                            if (!widget.useLocal &&
+                                !settingModel.isRemoteStorageSetted)
+                              FilledButton(
+                                onPressed: () => Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) =>
+                                          const SettingStorageRoute(),
+                                    )),
+                                child: Text(l10n.setRemoteStroage),
+                              ),
+                          ],
+                        ),
+                      ),
+          );
         }
-        DateFormat format = localeCode == 'zh'
-            ? DateFormat('M月d日 EEE', 'zh')
-            : DateFormat('EEE, MMM d', 'en');
-        children.add(GestureDetector(
-          child: Container(
-            height: 55,
-            padding: const EdgeInsets.fromLTRB(
-                AppSpacing.md, AppSpacing.md, 0, AppSpacing.md),
+        final row = _rows[index];
+        final date = all[row.start].dateCreated();
+        if (row.kind == _GalleryRowKind.photos) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 2),
             child: Row(
               children: [
-                Text(
-                  format.format(currentDateTime),
-                  style: textTheme.titleMedium?.copyWith(
-                    color: textColor,
-                  ),
-                ),
+                for (var i = row.start; i < row.end; i++) ...[
+                  if (i > row.start) const SizedBox(width: 2),
+                  buildTile(i),
+                ],
+              ],
+            ),
+          );
+        }
+        if (row.kind == _GalleryRowKind.month) {
+          return Container(
+            height: 90,
+            padding: const EdgeInsets.fromLTRB(
+                AppSpacing.md, AppSpacing.xl, 0, AppSpacing.md),
+            child: Text(DateFormat.yMMMM(localeCode).format(date),
+                style: textTheme.headlineLarge),
+          );
+        }
+        final selected =
+            Iterable<int>.generate(row.end - row.start, (i) => i + row.start)
+                .every((i) => _selectedIndices[i] ?? false);
+        return GestureDetector(
+          onTap: showDateLocateDialog,
+          child: Container(
+            height: 55,
+            padding: const EdgeInsets.only(left: AppSpacing.md),
+            child: Row(
+              children: [
                 Expanded(
-                    child: Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    Transform.scale(
-                      scale: 1.2,
-                      child: Checkbox(
-                          value: selectedAll,
-                          shape: RoundedRectangleBorder(
-                              borderRadius:
-                                  BorderRadius.circular(AppRadius.small)),
-                          onChanged: (isSelect) async {
-                            if (isSelect == null) {
-                              return;
-                            }
-                            if (isSelect) {
-                              for (int j = i;
-                                  i - j < currentChildrenLength;
-                                  j--) {
-                                _selectedIndices[j] = true;
-                              }
-                            } else {
-                              for (int j = i;
-                                  i - j < currentChildrenLength;
-                                  j--) {
-                                _selectedIndices.remove(j);
-                              }
-                            }
-                            HapticFeedback.lightImpact();
-                            updateSelection();
-                          }),
-                    ),
-                  ],
+                    child: Text(
+                  DateFormat(localeCode == 'zh' ? 'M月d日 EEE' : 'EEE, MMM d',
+                          localeCode)
+                      .format(date),
+                  style: textTheme.titleMedium,
                 )),
+                Checkbox(
+                  value: selected,
+                  onChanged: (value) {
+                    for (var i = row.start; i < row.end; i++) {
+                      if (value == true) {
+                        _selectedIndices[i] = true;
+                      } else {
+                        _selectedIndices.remove(i);
+                      }
+                    }
+                    HapticFeedback.lightImpact();
+                    updateSelection();
+                  },
+                ),
               ],
             ),
           ),
-          onTap: () => showDateLocateDialog(),
-        ));
-        children.add(Wrap(
-          spacing: 2, // 主轴(水平)方向间距
-          runSpacing: 2.0, // 纵轴（垂直）方向间距
-          alignment: WrapAlignment.start,
-          children: currentChildren,
-        ));
-      }
-    }
-    maxScrollOffset = currentScrollOffset;
-    return SliverList.list(
-      children: [
-        if ((widget.useLocal &&
-                assetModel.localAssets.isEmpty &&
-                assetModel.localGetting != null) ||
-            (!widget.useLocal &&
-                assetModel.remoteAssets.isEmpty &&
-                assetModel.remoteGetting != null))
-          Container(
-            height: 100,
-            alignment: Alignment.center,
-            child: Text(l10n.refreshing,
-                style: textTheme.bodyMedium
-                    ?.copyWith(color: colorScheme.onSurfaceVariant)),
-          ),
-        if (all.isEmpty &&
-            ((widget.useLocal && assetModel.localGetting == null) ||
-                (!widget.useLocal && assetModel.remoteGetting == null)))
-          SizedBox(
-            height: 300,
-            child: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    widget.useLocal
-                        ? Icons.photo_library_outlined
-                        : Icons.cloud_off_outlined,
-                    size: 64,
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    widget.useLocal ? l10n.noLocalPhotos : l10n.noCloudPhotos,
-                    style: textTheme.bodyMedium
-                        ?.copyWith(color: colorScheme.onSurfaceVariant),
-                  ),
-                  const SizedBox(height: 16),
-                  if (!widget.useLocal && !settingModel.isRemoteStorageSetted)
-                    FilledButton(
-                      onPressed: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (context) => const SettingStorageRoute()),
-                      ),
-                      child: Text(l10n.setRemoteStroage),
-                    ),
-                ],
-              ),
-            ),
-          ),
-        ...children
-      ],
+        );
+      },
     );
   }
 
@@ -1480,3 +1385,33 @@ class CustomHalfCircleClipper extends CustomClipper<Rect> {
 }
 
 class _CustomScaleGestureRecognizer extends ScaleGestureRecognizer {}
+
+class _GalleryThumbnail extends StatefulWidget {
+  const _GalleryThumbnail({super.key, required this.asset});
+
+  final Asset asset;
+
+  @override
+  State<_GalleryThumbnail> createState() => _GalleryThumbnailState();
+}
+
+class _GalleryThumbnailState extends State<_GalleryThumbnail> {
+  final _cancel = Completer<void>();
+  late final _loading = widget.asset.thumbnailDataAsync(cancel: _cancel.future);
+
+  @override
+  void dispose() {
+    _cancel.complete();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder(
+      future: _loading,
+      builder: (context, snapshot) => widget.asset.loadThumbnailFinished()
+          ? Image(image: widget.asset.thumbnailProvider(), fit: BoxFit.cover)
+          : ThumbnailSkeleton(),
+    );
+  }
+}

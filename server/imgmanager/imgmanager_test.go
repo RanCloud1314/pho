@@ -1,6 +1,7 @@
 package imgmanager
 
 import (
+	"errors"
 	"io/fs"
 	"path/filepath"
 	"slices"
@@ -205,13 +206,38 @@ func TestRangeByDateStopsBeforeListingOlderMonths(t *testing.T) {
 	}
 }
 
+func TestRangeByDatePropagatesDirectoryErrors(t *testing.T) {
+	for _, failed := range []string{"2026", filepath.Join("2026", "11"), "20261128", filepath.Join("20261128", "live_a")} {
+		t.Run(failed, func(t *testing.T) {
+			im := NewImgManager(Option{WorkerNum: 1})
+			defer im.Close()
+			md := &listingDrive{mockDrive: newMockDrive(), failed: failed}
+			im.SetDrive(md)
+			md.rangeFiles["."] = []mockDirEntry{
+				{name: "2026", isDir: true}, {name: "20261128", isDir: true},
+			}
+			md.rangeFiles["2026"] = []mockDirEntry{{name: "11", isDir: true}}
+			md.rangeFiles["20261128"] = []mockDirEntry{{name: "live_a", isDir: true}}
+			err := im.RangeByDate(time.Date(2026, 11, 28, 0, 0, 0, 0, time.Local),
+				func(ImgInfo) bool { return true })
+			if err == nil {
+				t.Fatal("expected directory error")
+			}
+		})
+	}
+}
+
 type listingDrive struct {
 	*mockDrive
 	listed []string
+	failed string
 }
 
 func (d *listingDrive) Range(dir string, deal func(fs.FileInfo) bool) error {
 	d.listed = append(d.listed, dir)
+	if dir == d.failed {
+		return errors.New("directory unavailable")
+	}
 	return d.mockDrive.Range(dir, deal)
 }
 

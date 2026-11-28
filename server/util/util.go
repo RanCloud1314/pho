@@ -7,7 +7,7 @@ import (
 )
 
 func IsVideo(name string) bool {
-	ext := filepath.Ext(name)
+	ext := filepath.Ext(strings.TrimSuffix(name, ".aes"))
 	switch strings.ToLower(ext) {
 	case ".mp4", ".avi", ".rmvb", ".rm", ".flv", ".wmv", ".mkv", ".mov", ".mpg", ".mpeg", ".3gp", ".3g2", ".asf", ".asx", ".vob", ".m2ts", ".mts", ".ts":
 		return true

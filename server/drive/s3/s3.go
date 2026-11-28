@@ -50,6 +50,11 @@ type S3 struct {
 	root          string
 	follow302     bool
 	force302HTTPS bool
+	indexMu       sync.Mutex
+	index         map[string][]fs.FileInfo
+	indexExpires  time.Time
+	indexVersion  uint64
+	indexLoading  chan struct{}
 	sem           chan struct{} // GET 并发槽位，download 时占用、body Close 时释放
 }
 
@@ -60,10 +65,6 @@ func NewS3(endpoint, region, accessKeyID, secretAccessKey, bucket, root string, 
 	}
 	if endpoint != "" {
 		opts = append(opts, config.WithBaseEndpoint(normalizeEndpoint(endpoint)))
-	}
-	cfg, err := config.LoadDefaultConfig(context.Background(), opts...)
-	if err != nil {
-		return nil, err
 	}
 	// 只限制首字节等待，不限流式 body，否则大视频会被中途掐断
 	tr := http.DefaultTransport.(*http.Transport).Clone()
@@ -78,6 +79,10 @@ func NewS3(endpoint, region, accessKeyID, secretAccessKey, bucket, root string, 
 		t.ResponseHeaderTimeout = 60 * time.Second
 		t.MaxIdleConnsPerHost = 16
 	})))
+	cfg, err := config.LoadDefaultConfig(context.Background(), opts...)
+	if err != nil {
+		return nil, err
+	}
 	cli := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.UsePathStyle = pathStyle
 	})
@@ -125,6 +130,7 @@ func (d *S3) Upload(p string, r io.ReadCloser, size int64, _ time.Time) error {
 		Key:    aws.String(d.key(p)),
 		Body:   r,
 	})
+	d.invalidateAlbumIndex()
 	if err != nil || !d.follow302 || size <= 0 {
 		return err
 	}
@@ -183,46 +189,78 @@ func (d *S3) IsExist(p string) (bool, error) {
 }
 
 func (d *S3) Download(p string) (io.ReadCloser, int64, error) {
-	return d.download(context.Background(), p, 0)
+	return d.DownloadMedia(context.Background(), p, -1, -1)
 }
 
 func (d *S3) DownloadWithOffset(p string, offset int64) (io.ReadCloser, int64, error) {
-	return d.download(context.Background(), p, offset)
+	return d.DownloadMedia(context.Background(), p, offset, -1)
 }
 
 // download：所有 GET 共享并发上限；body Close 时释放槽位。
 func (d *S3) download(ctx context.Context, p string, offset int64) (io.ReadCloser, int64, error) {
+	return d.DownloadMedia(ctx, p, offset, -1)
+}
+
+func (d *S3) DownloadMedia(ctx context.Context, p string, offset, end int64) (io.ReadCloser, int64, error) {
 	select {
 	case d.sem <- struct{}{}:
 	case <-ctx.Done():
 		return nil, 0, ctx.Err()
 	}
-	rc, size, err := d.downloadInner(ctx, p, offset)
+	ctx, cancel := context.WithCancel(ctx)
+	const stall = 30 * time.Second
+	timer := time.AfterFunc(stall, cancel)
+	var rc io.ReadCloser
+	var size int64
+	var err error
+	if end >= 0 {
+		rc, size, err = d.downloadBounded(ctx, p, offset, end)
+	} else {
+		rc, size, err = d.downloadInner(ctx, p, offset)
+	}
 	if err != nil {
+		timer.Stop()
+		cancel()
 		<-d.sem
 		return nil, 0, err
 	}
-	return &semBody{rc: rc, sem: d.sem}, size, nil
+	return &semBody{rc: rc, sem: d.sem, timer: timer, stall: stall, cancel: cancel}, size, nil
 }
 
 // semBody 在 Close 时释放并发槽位；sync.Once 防双释放。
 type semBody struct {
-	rc   io.ReadCloser
-	sem  chan struct{}
-	once sync.Once
+	rc     io.ReadCloser
+	sem    chan struct{}
+	once   sync.Once
+	timer  *time.Timer
+	stall  time.Duration
+	cancel context.CancelFunc
 }
 
-func (b *semBody) Read(p []byte) (int, error) { return b.rc.Read(p) }
+func (b *semBody) Read(p []byte) (int, error) {
+	n, err := b.rc.Read(p)
+	if n > 0 && b.timer != nil {
+		b.timer.Reset(b.stall)
+	}
+	return n, err
+}
 
 func (b *semBody) Close() error {
-	err := b.rc.Close()
-	b.once.Do(func() { <-b.sem })
+	var err error
+	b.once.Do(func() {
+		if b.timer != nil {
+			b.timer.Stop()
+			b.cancel()
+		}
+		err = b.rc.Close()
+		<-b.sem
+	})
 	return err
 }
 
 // downloadInner 为原 download 主体。
 func (d *S3) downloadInner(ctx context.Context, p string, offset int64) (io.ReadCloser, int64, error) {
-	if offset == 0 {
+	if offset < 0 {
 		// 全量下载走分片：首片 Range bytes=0-2M 的 206 Content-Range 给出总大小，
 		// 据此决定单流（小对象/服务端忽略 Range）或并行分片
 		if d.follow302 {
@@ -246,7 +284,7 @@ func (d *S3) downloadFull(ctx context.Context, p string) (io.ReadCloser, int64, 
 	first, err := d.getObjectRange(ctx, p, 0, firstChunkSize-1)
 	if err != nil {
 		if isRangeNotSatisfiable(err) {
-			return d.getObject(ctx, p, 0) // 空对象：S3 对 Range 返回 416
+			return d.getObject(ctx, p, -1) // 空对象：S3 对 Range 返回 416
 		}
 		return nil, 0, err
 	}
@@ -261,7 +299,7 @@ func (d *S3) downloadFull(ctx context.Context, p string) (io.ReadCloser, int64, 
 	}
 	if total > parallelMaxSize {
 		first.Body.Close()
-		return d.getObject(ctx, p, 0) // 大文件退回单流
+		return d.getObject(ctx, p, -1) // 大文件退回单流
 	}
 	return stitchTails(ctx, first.Body, total, func(ctx context.Context, start, end int64) (io.ReadCloser, error) {
 		out, err := d.getObjectRange(ctx, p, start, end)
@@ -513,12 +551,32 @@ func (p *parallelDownload) Close() error {
 	return p.first.Close()
 }
 
+func (d *S3) downloadBounded(ctx context.Context, p string, offset, end int64) (io.ReadCloser, int64, error) {
+	out, err := d.getObjectRange(ctx, p, offset, end)
+	if err != nil {
+		if d.follow302 && ctx.Err() == nil {
+			return d.downloadFollow302(ctx, p, offset, end)
+		}
+		return nil, 0, err
+	}
+	if out.ContentRange == nil && offset > 0 {
+		if _, err := io.CopyN(io.Discard, out.Body, offset); err != nil {
+			out.Body.Close()
+			return nil, 0, err
+		}
+	}
+	if total, ok := parseTotal(aws.ToString(out.ContentRange)); ok {
+		return out.Body, total, nil
+	}
+	return out.Body, aws.ToInt64(out.ContentLength), nil
+}
+
 func (d *S3) getObject(ctx context.Context, p string, offset int64) (io.ReadCloser, int64, error) {
 	in := &s3.GetObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(d.key(p)),
 	}
-	if offset > 0 {
+	if offset >= 0 {
 		in.Range = aws.String(fmt.Sprintf("bytes=%d-", offset))
 	}
 	out, err := d.cli.GetObject(ctx, in)
@@ -535,7 +593,7 @@ func (d *S3) getObject(ctx context.Context, p string, offset int64) (io.ReadClos
 }
 
 // downloadFollow302 手动两步跟随：预签名 GET（不签 Range，坑 4）→ 302 Location → 直链只带 Range（坑 3）
-func (d *S3) downloadFollow302(ctx context.Context, p string, offset int64) (io.ReadCloser, int64, error) {
+func (d *S3) downloadFollow302(ctx context.Context, p string, offset int64, ends ...int64) (io.ReadCloser, int64, error) {
 	po, err := d.presigner.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(d.key(p)),
@@ -579,7 +637,9 @@ func (d *S3) downloadFollow302(ctx context.Context, p string, offset int64) (io.
 	if err != nil {
 		return nil, 0, err
 	}
-	if offset > 0 {
+	if len(ends) > 0 {
+		req2.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", offset, ends[0]))
+	} else if offset >= 0 {
 		req2.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
 	// 直链是 CDN，可能再跳一次；不带任何签名头，跟随便安全
@@ -644,6 +704,7 @@ func parseTotal(contentRange string) (int64, bool) {
 }
 
 func (d *S3) Delete(p string) error {
+	defer d.invalidateAlbumIndex()
 	_, err := d.cli.DeleteObject(context.Background(), &s3.DeleteObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(d.key(p)),
@@ -665,7 +726,19 @@ func (d *S3) prefix(dir string) string {
 }
 
 func (d *S3) Range(dir string, deal func(fs.FileInfo) bool) error {
+	return d.RangeContext(context.Background(), dir, deal)
+}
+
+func (d *S3) RangeContext(ctx context.Context, dir string, deal func(fs.FileInfo) bool) error {
 	prefix := d.prefix(dir)
+	d.indexMu.Lock()
+	if time.Now().Before(d.indexExpires) && !strings.HasPrefix(strings.TrimPrefix(prefix, d.prefix(".")), ".") {
+		infos := d.index[prefix]
+		d.indexMu.Unlock()
+		dealAll(infos, deal)
+		return nil
+	}
+	d.indexMu.Unlock()
 	pg := s3.NewListObjectsV2Paginator(d.cli, &s3.ListObjectsV2Input{
 		Bucket:    aws.String(d.bucket),
 		Prefix:    aws.String(prefix),
@@ -674,7 +747,7 @@ func (d *S3) Range(dir string, deal func(fs.FileInfo) bool) error {
 	})
 	var infos []fs.FileInfo
 	for pg.HasMorePages() {
-		out, err := pg.NextPage(context.Background())
+		out, err := pg.NextPage(ctx)
 		if err != nil {
 			return err
 		}
@@ -700,6 +773,93 @@ func (d *S3) Range(dir string, deal func(fs.FileInfo) bool) error {
 }
 
 // dealAll 按顺序回调，返回 false 表示调用方要求停止
+func (d *S3) invalidateAlbumIndex() {
+	d.indexMu.Lock()
+	defer d.indexMu.Unlock()
+	d.index = nil
+	d.indexExpires = time.Time{}
+	d.indexVersion++
+}
+
+func (d *S3) PrepareAlbumIndex(ctx context.Context) error {
+	var version uint64
+	for {
+		d.indexMu.Lock()
+		if time.Now().Before(d.indexExpires) {
+			d.indexMu.Unlock()
+			return nil
+		}
+		wait := d.indexLoading
+		if wait == nil {
+			d.indexLoading = make(chan struct{})
+			version = d.indexVersion
+			d.indexMu.Unlock()
+			break
+		}
+		d.indexMu.Unlock()
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	defer func() {
+		d.indexMu.Lock()
+		close(d.indexLoading)
+		d.indexLoading = nil
+		d.indexMu.Unlock()
+	}()
+
+	root := d.prefix(".")
+	pages := s3.NewListObjectsV2Paginator(d.cli, &s3.ListObjectsV2Input{
+		Bucket: aws.String(d.bucket), Prefix: aws.String(root), MaxKeys: pageSize(),
+	})
+	index := make(map[string][]fs.FileInfo)
+	directories := make(map[string]bool)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			return err
+		}
+		for _, obj := range page.Contents {
+			key := aws.ToString(obj.Key)
+			if !strings.HasPrefix(key, root) || key == root {
+				continue
+			}
+			relative := strings.TrimPrefix(key, root)
+			parts := strings.Split(strings.TrimSuffix(relative, "/"), "/")
+			if strings.HasPrefix(parts[0], ".") {
+				continue
+			}
+			prefix := root
+			for i, part := range parts {
+				if i == len(parts)-1 && !strings.HasSuffix(key, "/") {
+					index[prefix] = append(index[prefix], &fileInfo{
+						name: part, size: aws.ToInt64(obj.Size), mod: aws.ToTime(obj.LastModified),
+					})
+					break
+				}
+				child := prefix + part + "/"
+				if !directories[child] {
+					directories[child] = true
+					index[prefix] = append(index[prefix], &fileInfo{name: part, dir: true})
+				}
+				prefix = child
+			}
+		}
+	}
+	for _, infos := range index {
+		sort.Sort(desc(infos))
+	}
+	d.indexMu.Lock()
+	defer d.indexMu.Unlock()
+	if d.indexVersion == version {
+		d.index = index
+		d.indexExpires = time.Now().Add(time.Minute)
+	}
+	return nil
+}
+
 func dealAll(infos []fs.FileInfo, deal func(fs.FileInfo) bool) bool {
 	for _, fi := range infos {
 		if !deal(fi) {
@@ -737,8 +897,13 @@ func (f *fileInfo) Sys() any           { return nil }
 
 type desc []fs.FileInfo
 
-func (d desc) Len() int           { return len(d) }
-func (d desc) Swap(i, j int)      { d[i], d[j] = d[j], d[i] }
-func (d desc) Less(i, j int) bool { return d[i].ModTime().After(d[j].ModTime()) }
+func (d desc) Len() int      { return len(d) }
+func (d desc) Swap(i, j int) { d[i], d[j] = d[j], d[i] }
+func (d desc) Less(i, j int) bool {
+	if d[i].ModTime().Equal(d[j].ModTime()) {
+		return d[i].Name() > d[j].Name()
+	}
+	return d[i].ModTime().After(d[j].ModTime())
+}
 
 func (d *S3) Close() error { return nil }

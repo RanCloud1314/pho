@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:img_syncer/setting_storage_route.dart';
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
@@ -33,7 +36,8 @@ String encryptionTypeName(EncryptionType type) {
 RemoteStorage storage = RemoteStorage("127.0.0.1", 10000);
 
 /// 可注入的缩略图缓存 loader；path_provider 不可用（测试环境）时返回 null 禁用缓存。
-Future<ThumbnailCache?> Function() thumbnailCacheLoader = _defaultThumbnailCache;
+Future<ThumbnailCache?> Function() thumbnailCacheLoader =
+    _defaultThumbnailCache;
 Future<ThumbnailCache?> _defaultThumbnailCache() async {
   try {
     final dir = await getApplicationSupportDirectory();
@@ -56,8 +60,37 @@ RemoteStorageClient? _storageOverride;
 RemoteStorageClient get storageClient => _storageOverride ?? storage;
 void setStorageForTest(RemoteStorageClient v) => _storageOverride = v;
 
+Future<String> remoteAlbumNamespace() async {
+  final prefs = await SharedPreferences.getInstance();
+  final drive = prefs.getString('drive') ?? 'SMB';
+  final keys = <Drive, List<String>>{
+    Drive.smb: ['addr', 'username', 'share', 'rootPath'],
+    Drive.webDav: ['webdav_url', 'webdav_username', 'webdav_root_path'],
+    Drive.nfs: ['nfs_url', 'nfs_root_path'],
+    Drive.s3: [
+      's3_endpoint',
+      's3_region',
+      's3_access_key_id',
+      's3_bucket',
+      's3_root'
+    ],
+  }[getDrive(drive)]!;
+  return jsonEncode([
+    drive,
+    ...keys.map(prefs.get),
+  ]);
+}
+
+Map<String, String> remoteMediaHeaders() => {
+      if (settingModel.enableEncrypt) ...{
+        'Image-Encrypt-Type': encryptionTypeName(settingModel.encryptionType),
+        'Image-Encrypt-Password': settingModel.encryptionPassword,
+      },
+    };
+
 class RemoteStorage implements RemoteStorageClient {
   int bufferSize = 1024 * 1024;
+
   /// 共享 HTTP 客户端，复用连接减少 TCP 握手开销
   http.Client httpClient = http.Client();
   ImgSyncerClient cli = ImgSyncerClient(ClientChannel(
@@ -300,17 +333,18 @@ class RemoteStorage implements RemoteStorageClient {
   //   }
   // }
 
-  Future<List<RemoteImage>> listImages(
-      String date, int offset, maxReturn) async {
-    final rsp = await cli
-        .listByDate(
-          ListByDateRequest(
-            date: date,
-            offset: offset,
-            maxReturn: maxReturn,
-          ),
-        )
-        .timeout(const Duration(seconds: 60));
+  Future<List<RemoteImage>> listImages(String date, int offset, maxReturn,
+      {String afterPath = ''}) async {
+    final namespace = await remoteAlbumNamespace();
+    final rsp = await cli.listByDate(
+      ListByDateRequest(
+        date: date,
+        offset: offset,
+        maxReturn: maxReturn,
+        afterPath: afterPath,
+      ),
+      options: CallOptions(timeout: const Duration(seconds: 60)),
+    );
     if (!rsp.success) {
       throw Exception("list images failed: ${rsp.message}");
     }
@@ -318,7 +352,8 @@ class RemoteStorage implements RemoteStorageClient {
         .map((e) => RemoteImage(cli, e.path.replaceAll('\\', '/'),
             size: e.size.toInt(),
             isLivePhoto: e.isLivePhoto,
-            httpClient: httpClient))
+            httpClient: httpClient,
+            cacheNamespace: namespace))
         .toList();
   }
 }
@@ -327,9 +362,10 @@ class RemoteImage {
   ImgSyncerClient cli;
   String path;
   int? size;
-  Uint8List? data;
+  final String? cacheNamespace;
   Uint8List? thumbnailData;
   bool isLivePhoto = false;
+
   /// 共享 HTTP 客户端，复用连接减少 TCP 握手开销
   late http.Client httpClient;
 
@@ -340,8 +376,8 @@ class RemoteImage {
   RemoteImage(
     this.cli,
     this.path, {
-    this.data,
     this.thumbnailData,
+    this.cacheNamespace,
     this.size,
     this.isLivePhoto = false,
     required this.httpClient,
@@ -351,52 +387,79 @@ class RemoteImage {
     return isVideoByPath(path);
   }
 
-  Stream<Uint8List> thumbnailStream() async* {
+  Uri mediaUri({String prefix = ''}) => Uri.parse(httpBaseUrl).replace(
+        pathSegments: [
+          if (prefix.isNotEmpty) prefix,
+          ...path.split('/').where((part) => part.isNotEmpty),
+        ],
+      );
+
+  static const _stallTimeout = Duration(seconds: 30);
+
+  Stream<Uint8List> thumbnailStream({Future<void>? cancel}) =>
+      _mediaStream(prefix: 'thumbnail', cancel: cancel);
+
+  Stream<Uint8List> _mediaStream({
+    String prefix = '',
+    Future<void>? cancel,
+    void Function(int downloaded, int total)? progress,
+  }) async* {
     await checkServer();
-    var urlPath = path;
-    if (urlPath[0] == '/') {
-      urlPath = urlPath.substring(1);
-    }
-    final url = '$httpBaseUrl/thumbnail/$urlPath';
-    final request = http.Request('GET', Uri.parse(url));
-    if (settingModel.enableEncrypt) {
-      request.headers['Image-Encrypt-Type'] =
-          encryptionTypeName(settingModel.encryptionType);
-      request.headers['Image-Encrypt-Password'] =
-          settingModel.encryptionPassword;
-    }
-    final response = await httpClient.send(request);
-    if (response.statusCode != 200) {
-      final errMsg = await response.stream.bytesToString();
-      throw Exception(
-          "get [$urlPath] thumbnail failed: [${response.reasonPhrase}] $errMsg");
-    }
-    await for (var data in response.stream) {
-      yield data as Uint8List;
+    final abort = Completer<void>();
+    final request = http.AbortableRequest('GET', mediaUri(prefix: prefix),
+        abortTrigger:
+            cancel == null ? abort.future : Future.any([abort.future, cancel]));
+    request.headers.addAll(remoteMediaHeaders());
+    try {
+      final response = await httpClient.send(request).timeout(_stallTimeout);
+      if (response.statusCode != 200) {
+        throw HttpException('HTTP ${response.statusCode}', uri: request.url);
+      }
+      final total = response.contentLength ?? -1;
+      var received = 0;
+      progress?.call(0, total);
+      await for (final chunk in response.stream.timeout(_stallTimeout)) {
+        received += chunk.length;
+        progress?.call(received, total);
+        yield chunk is Uint8List ? chunk : Uint8List.fromList(chunk);
+      }
+      if (total >= 0 && received != total) {
+        throw const HttpException('Incomplete download');
+      }
+    } finally {
+      abort.complete();
     }
   }
 
-  Future<Uint8List?> thumbnail() async {
+  Future<Uint8List?> thumbnail({Future<void>? cancel}) async {
     if (thumbnailData != null) {
       return thumbnailData;
     }
     // 磁盘缓存：命中不走网络、不占信号量（刷新重建实例后的二次拉取也在此命中）
-    final cache = await thumbnailCacheLoader();
-    // 解码失败的缓存条目（写盘中途被杀截断/位腐烂）当 miss，重新走网络并覆写
-    final cached = await cache?.read(path, size);
-    if (cached != null && await isValidImage(cached)) {
+    final namespace = cacheNamespace;
+    final encrypted = path.toLowerCase().endsWith('.aes');
+    final cache = namespace == null || encrypted || settingModel.enableEncrypt
+        ? null
+        : await thumbnailCacheLoader();
+    final cacheKey = jsonEncode([namespace, path]);
+    // 校验和由磁盘缓存检查，命中时无需重复解码。
+    final cached = await cache?.read(cacheKey, size);
+    if (cached != null) {
       thumbnailData = cached;
       return cached;
     }
+    var cancelled = false;
+    cancel?.then((_) => cancelled = true);
     int maxRetries = 3;
     int retryCount = 0;
-    while (retryCount < maxRetries) {
+    while (!cancelled && retryCount < maxRetries) {
       try {
         await _thumbnailSemaphore.acquire();
         Uint8List bytes;
         try {
+          if (cancelled) return null;
           final currentData = BytesBuilder();
-          final dataStream = thumbnailStream();
+          final dataStream = thumbnailStream(cancel: cancel);
           await for (var d in dataStream) {
             currentData.add(d);
           }
@@ -407,12 +470,15 @@ class RemoteImage {
         if (bytes.isEmpty) {
           throw Exception("empty thumbnail");
         }
-        thumbnailData = bytes;
         // 能解码成图片才落盘：防非法字节毒化磁盘缓存（issue #89 同思路）
-        if (cache != null && await isValidImage(bytes)) {
-          unawaited(cache.write(path, size, bytes));
-        }
+        if (!await isValidImage(bytes)) return null;
+        thumbnailData = bytes;
+        if (cache != null) unawaited(cache.write(cacheKey, size, bytes));
         return bytes;
+      } on http.RequestAbortedException {
+        return null;
+      } on TimeoutException {
+        return null;
       } catch (e) {
         logger.addLog("get $path thumbnail failed: $e");
         // 指数退避：100/200/400ms
@@ -426,66 +492,56 @@ class RemoteImage {
 
   Stream<Uint8List> dataStream({
     bool reportProgress = true,
+    Future<void>? cancel,
     void Function(int downloaded, int total)? onProgress,
   }) async* {
-    await checkServer();
-    if (path[0] == '/') {
-      path = path.substring(1);
+    final id = basename(path);
+    var succeeded = false;
+    try {
+      yield* _mediaStream(
+          cancel: cancel,
+          progress: (received, total) {
+            if (reportProgress)
+              stateModel.updateDownloadProgress(id, received, total);
+            onProgress?.call(received, total);
+          });
+      succeeded = true;
+    } finally {
+      if (reportProgress) stateModel.finishDownload(id, succeeded);
     }
-    final url = '$httpBaseUrl/$path';
-    final request = http.Request('GET', Uri.parse(url));
-    if (settingModel.enableEncrypt) {
-      request.headers['Image-Encrypt-Type'] =
-          encryptionTypeName(settingModel.encryptionType);
-      request.headers['Image-Encrypt-Password'] =
-          settingModel.encryptionPassword;
-    }
-    final response = await httpClient.send(request);
-    if (response.statusCode != 200) {
-      throw Exception("get image failed: ${response.statusCode}");
-    }
-    final total = response.contentLength ?? -1;
-    if (reportProgress) {
-      stateModel.updateDownloadProgress(basename(path), 1, total);
-    }
-    if (onProgress != null) {
-      onProgress(1, total);
-    }
-    int downloaded = 0;
-    await for (var data in response.stream) {
-      downloaded += data.length;
-      if (reportProgress) {
-        stateModel.updateDownloadProgress(basename(path), downloaded, total);
+  }
+
+  Future<void> saveTo(File destination) async {
+    final temporary = await destination.parent.createTemp('.pho-download-');
+    try {
+      final staged = File(join(temporary.path, 'download'));
+      final output = await staged.open(mode: FileMode.write);
+      try {
+        await for (final chunk in dataStream()) {
+          await output.writeFrom(chunk);
+        }
+      } finally {
+        await output.close();
       }
-      if (onProgress != null) {
-        onProgress(downloaded, total);
-      }
-      yield data as Uint8List;
-    }
-    if (reportProgress) {
-      stateModel.finishDownload(basename(path), true);
-    }
-    if (onProgress != null) {
-      onProgress(downloaded, total);
+      await staged.rename(destination.path);
+    } finally {
+      await temporary.delete(recursive: true);
     }
   }
 
   Future<Uint8List> imageData({
     bool reportProgress = true,
+    Future<void>? cancel,
     void Function(int downloaded, int total)? onProgress,
   }) async {
-    if (data != null) {
-      return data!;
-    }
-    var currentData = BytesBuilder();
-    var stream = dataStream(
+    final bytes = BytesBuilder(copy: false);
+    await for (final chunk in dataStream(
       reportProgress: reportProgress,
+      cancel: cancel,
       onProgress: onProgress,
-    );
-    await for (var d in stream) {
-      currentData.add(d);
+    )) {
+      bytes.add(chunk);
     }
-    data = currentData.takeBytes();
-    return data!;
+    return bytes.takeBytes();
   }
 }

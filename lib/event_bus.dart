@@ -9,8 +9,9 @@ class LocalRefreshEvent {
 }
 
 class RemoteRefreshEvent {
-  RemoteRefreshEvent({this.refreshUnSync = true});
-  bool refreshUnSync = true;
+  RemoteRefreshEvent({this.refreshUnSync = true, this.preserve = false});
+  final bool refreshUnSync;
+  final bool preserve;
 }
 
 class FinishGettingLocal {

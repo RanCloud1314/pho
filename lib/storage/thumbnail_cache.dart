@@ -7,9 +7,11 @@ class ThumbnailCache {
   ThumbnailCache(this.baseDir);
 
   /// FNV-1a 64 位（Dart VM 64 位整数回绕），5 千张碰撞概率 ~1e-13
-  static int fnv1a64(String s) {
+  static int fnv1a64(String s) => _checksum(s.codeUnits);
+
+  static int _checksum(Iterable<int> bytes) {
     var h = 0xcbf29ce484222325;
-    for (final c in s.codeUnits) {
+    for (final c in bytes) {
       h ^= c;
       h = (h * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF;
     }
@@ -23,7 +25,11 @@ class ThumbnailCache {
     try {
       final f = File(_file(path, size));
       if (await f.exists()) {
-        return await f.readAsBytes();
+        final bytes = await f.readAsBytes();
+        if (bytes.length <= 8) return null;
+        final data = Uint8List.sublistView(bytes, 8);
+        final stored = ByteData.sublistView(bytes).getInt64(0);
+        if (stored == _checksum(data)) return data;
       }
     } catch (_) {}
     return null;
@@ -34,7 +40,10 @@ class ThumbnailCache {
       await baseDir.create(recursive: true);
       final f = File(_file(path, size));
       final tmp = File('${f.path}.tmp');
-      await tmp.writeAsBytes(bytes, flush: true);
+      final packet = Uint8List(bytes.length + 8);
+      ByteData.sublistView(packet).setInt64(0, _checksum(bytes));
+      packet.setRange(8, packet.length, bytes);
+      await tmp.writeAsBytes(packet, flush: true);
       // 原子落盘：写盘被杀最多留下完整内容的 .tmp（read 永远看不到），
       // 不会出现半截 key 文件；Windows rename 不能覆盖已存在目标，先删后换——
       // 删除瞬间最多让下一次 read 变 miss（走网络），无毒化风险

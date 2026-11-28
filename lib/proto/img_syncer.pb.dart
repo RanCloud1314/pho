@@ -215,6 +215,7 @@ class ListByDateRequest extends $pb.GeneratedMessage {
     $core.String? date,
     $core.int? offset,
     $core.int? maxReturn,
+    $core.String? afterPath,
   }) {
     final $result = create();
     if (date != null) {
@@ -226,6 +227,9 @@ class ListByDateRequest extends $pb.GeneratedMessage {
     if (maxReturn != null) {
       $result.maxReturn = maxReturn;
     }
+    if (afterPath != null) {
+      $result.afterPath = afterPath;
+    }
     return $result;
   }
   ListByDateRequest._() : super();
@@ -236,6 +240,7 @@ class ListByDateRequest extends $pb.GeneratedMessage {
     ..aOS(1, _omitFieldNames ? '' : 'date')
     ..a<$core.int>(2, _omitFieldNames ? '' : 'offset', $pb.PbFieldType.O3)
     ..a<$core.int>(3, _omitFieldNames ? '' : 'maxReturn', $pb.PbFieldType.O3, protoName: 'maxReturn')
+    ..aOS(4, _omitFieldNames ? '' : 'afterPath', protoName: 'afterPath')
     ..hasRequiredFields = false
   ;
 
@@ -286,6 +291,15 @@ class ListByDateRequest extends $pb.GeneratedMessage {
   $core.bool hasMaxReturn() => $_has(2);
   @$pb.TagNumber(3)
   void clearMaxReturn() => clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.String get afterPath => $_getSZ(3);
+  @$pb.TagNumber(4)
+  set afterPath($core.String v) { $_setString(3, v); }
+  @$pb.TagNumber(4)
+  $core.bool hasAfterPath() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearAfterPath() => clearField(4);
 }
 
 class ListByDateResponse extends $pb.GeneratedMessage {

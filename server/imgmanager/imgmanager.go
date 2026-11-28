@@ -1,6 +1,7 @@
 package imgmanager
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -138,6 +139,8 @@ func (im *ImgManager) runWorker() {
 type Options struct {
 	EncyptOption EncryptOption
 	IsLivePhoto  bool
+	ctx          context.Context
+	rangeEnd     *int64
 }
 
 // EncryptType 和常量已迁移至 encrypt.go
@@ -153,6 +156,36 @@ func WithEncrypt(opt EncryptOption) OptionFunc {
 	return func(o *Options) {
 		o.EncyptOption = opt
 	}
+}
+
+func WithMediaRequest(ctx context.Context, end int64) OptionFunc {
+	return func(o *Options) {
+		o.ctx = ctx
+		o.rangeEnd = &end
+	}
+}
+
+func (o Options) end() int64 {
+	if o.rangeEnd == nil {
+		return -1
+	}
+	return *o.rangeEnd
+}
+
+func (o Options) download(d StorageDrive, path string, offset, end int64) (io.ReadCloser, int64, error) {
+	ctx := o.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if reader, ok := d.(interface {
+		DownloadMedia(context.Context, string, int64, int64) (io.ReadCloser, int64, error)
+	}); ok {
+		return reader.DownloadMedia(ctx, path, offset, end)
+	}
+	if offset < 0 {
+		return d.Download(path)
+	}
+	return d.DownloadWithOffset(path, offset)
 }
 
 func IsLivePhoto(isLivePhoto bool) OptionFunc {
@@ -308,7 +341,7 @@ func (im *ImgManager) GetImg(path string, opts ...OptionFunc) (*Image, error) {
 	var rc io.ReadCloser
 	d, unlock := im.drive()
 	defer unlock()
-	rc, img.Size, err = d.Download(path)
+	rc, img.Size, err = options.download(d, path, -1, -1)
 	if err != nil {
 		return img, err
 	}
@@ -344,7 +377,7 @@ func (im *ImgManager) GetOffset(path string, offset int64, opts ...OptionFunc) (
 	if getPathEncType(path) != None {
 		// 加密文件：先读 header 判断 GCM/CFB
 		d, unlock := im.drive()
-		rc, storedSize, err := d.Download(path)
+		rc, storedSize, err := options.download(d, path, 0, int64(gcmHeaderLen)-1)
 		if err != nil {
 			unlock()
 			return nil, err
@@ -371,12 +404,22 @@ func (im *ImgManager) GetOffset(path string, offset int64, opts ...OptionFunc) (
 			copy(salt, headerRemain[:gcmSaltLen])
 			chunkSize := binary.BigEndian.Uint32(headerRemain[gcmSaltLen:])
 
+			plainSize := DecryptedContentSize(storedSize, AES_256_GCM)
+			if chunkSize == 0 || offset >= plainSize {
+				return nil, fmt.Errorf("invalid encrypted media range")
+			}
 			chunkIndex := offset / int64(chunkSize)
 			withinChunk := offset % int64(chunkSize)
 			ciphertextStart := int64(gcmHeaderLen) + chunkIndex*(int64(chunkSize)+int64(gcmNonceSize)+int64(gcmTagSize))
 
+			ciphertextEnd := int64(-1)
+			if end := options.end(); end >= 0 {
+				lastChunk := min(end, plainSize-1) / int64(chunkSize)
+				ciphertextEnd = min(storedSize-1,
+					int64(gcmHeaderLen)+(lastChunk+1)*int64(chunkSize+gcmNonceSize+gcmTagSize)-1)
+			}
 			d2, unlock2 := im.drive()
-			diskRc, diskSize, err := d2.DownloadWithOffset(path, ciphertextStart)
+			diskRc, diskSize, err := options.download(d2, path, ciphertextStart, ciphertextEnd)
 			if err != nil {
 				unlock2()
 				return nil, err
@@ -403,7 +446,7 @@ func (im *ImgManager) GetOffset(path string, offset int64, opts ...OptionFunc) (
 				Content:     seekRc,
 				Size:        DecryptedContentSize(storedSize, AES_256_GCM),
 				Path:        path,
-				ContentType: mime.TypeByExtension(strings.TrimSuffix(filepath.Ext(path), ".aes")),
+				ContentType: util.ContentTypeByExtension(filepath.Ext(strings.TrimSuffix(path, ".aes"))),
 			}
 			// 注意：seekRc.Close() 负责关闭 diskRc，但 drive 锁需要在此释放
 			unlock2()
@@ -421,7 +464,7 @@ func (im *ImgManager) GetOffset(path string, offset int64, opts ...OptionFunc) (
 	var err error
 	d, unlock := im.drive()
 	defer unlock()
-	img.Content, img.Size, err = d.DownloadWithOffset(path, offset)
+	img.Content, img.Size, err = options.download(d, path, offset, options.end())
 	if err != nil {
 		return img, err
 	}
@@ -445,7 +488,7 @@ func (im *ImgManager) GetThumbnail(path string, opts ...OptionFunc) (*Image, err
 	thumbnailPath := filepath.Join(defaultThumbnailDir, path)
 	d, unlock := im.drive()
 	defer unlock()
-	rc, img.Size, err = d.Download(thumbnailPath)
+	rc, img.Size, err = options.download(d, thumbnailPath, -1, -1)
 	if err != nil {
 		return img, fmt.Errorf("error downloading thumbnail: %w", err)
 	}
@@ -480,13 +523,13 @@ func (im *ImgManager) GetLiveVideoOffset(path string, offset int64, opts ...Opti
 	}
 	var videoPath string
 	dir := filepath.Dir(path)
-	func() {
+	err := func() error {
 		d, unlock := im.drive()
 		defer unlock()
-		d.Range(dir, func(info fs.FileInfo) bool {
+		return d.Range(dir, func(info fs.FileInfo) bool {
 			name := info.Name()
-			nameWithoutExt := filepath.Base(name)[:len(filepath.Base(name))-len(filepath.Ext(name))]
-			pathNameWithoutExt := filepath.Base(path)[:len(filepath.Base(path))-len(filepath.Ext(path))]
+			nameWithoutExt := strings.TrimSuffix(strings.TrimSuffix(name, ".aes"), filepath.Ext(strings.TrimSuffix(name, ".aes")))
+			pathNameWithoutExt := strings.TrimSuffix(strings.TrimSuffix(filepath.Base(path), ".aes"), filepath.Ext(strings.TrimSuffix(path, ".aes")))
 			if util.IsVideo(name) && nameWithoutExt == pathNameWithoutExt {
 				videoPath = filepath.Join(dir, name)
 				return false
@@ -494,13 +537,16 @@ func (im *ImgManager) GetLiveVideoOffset(path string, offset int64, opts ...Opti
 			return true
 		})
 	}()
+	if err != nil {
+		return nil, err
+	}
 	if videoPath == "" {
 		return nil, fmt.Errorf("video not found")
 	}
 	if getPathEncType(videoPath) != None {
 		// 加密视频：先读 header 判断 GCM/CFB
 		d, unlock := im.drive()
-		rc, storedSize, err := d.Download(videoPath)
+		rc, storedSize, err := options.download(d, videoPath, 0, int64(gcmHeaderLen)-1)
 		if err != nil {
 			unlock()
 			return nil, err
@@ -526,12 +572,22 @@ func (im *ImgManager) GetLiveVideoOffset(path string, offset int64, opts ...Opti
 			copy(salt, headerRemain[:gcmSaltLen])
 			chunkSize := binary.BigEndian.Uint32(headerRemain[gcmSaltLen:])
 
+			plainSize := DecryptedContentSize(storedSize, AES_256_GCM)
+			if chunkSize == 0 || offset >= plainSize {
+				return nil, fmt.Errorf("invalid encrypted media range")
+			}
 			chunkIndex := offset / int64(chunkSize)
 			withinChunk := offset % int64(chunkSize)
 			ciphertextStart := int64(gcmHeaderLen) + chunkIndex*(int64(chunkSize)+int64(gcmNonceSize)+int64(gcmTagSize))
 
+			ciphertextEnd := int64(-1)
+			if end := options.end(); end >= 0 {
+				lastChunk := min(end, plainSize-1) / int64(chunkSize)
+				ciphertextEnd = min(storedSize-1,
+					int64(gcmHeaderLen)+(lastChunk+1)*int64(chunkSize+gcmNonceSize+gcmTagSize)-1)
+			}
 			d2, unlock2 := im.drive()
-			diskRc, diskSize, err := d2.DownloadWithOffset(videoPath, ciphertextStart)
+			diskRc, diskSize, err := options.download(d2, videoPath, ciphertextStart, ciphertextEnd)
 			if err != nil {
 				unlock2()
 				return nil, err
@@ -573,10 +629,9 @@ func (im *ImgManager) GetLiveVideoOffset(path string, offset int64, opts ...Opti
 	}
 	// log.Printf("load video: %s", videoPath)
 	img := &Image{}
-	var err error
 	d, unlock := im.drive()
 	defer unlock()
-	img.Content, img.Size, err = d.DownloadWithOffset(videoPath, offset)
+	img.Content, img.Size, err = options.download(d, videoPath, offset, options.end())
 	if err != nil {
 		return img, err
 	}
@@ -639,19 +694,39 @@ type dirInfo struct {
 }
 
 type ImgInfo struct {
+	Date        time.Time
 	Path        string
 	Size        int64
 	IsLivePhoto bool
 }
 
 func (im *ImgManager) RangeByDate(date time.Time, f func(info ImgInfo) bool) error {
+	return im.RangeAlbum(context.Background(), date, false, f)
+}
+
+func (im *ImgManager) RangeAlbum(ctx context.Context, date time.Time, prepareIndex bool, f func(info ImgInfo) bool) error {
 	d, unlock := im.drive()
 	defer unlock()
 	if date.IsZero() {
 		date = time.Now()
 	}
 	location := date.Location()
-	root, err := im.listDir(d, ".")
+	if prepareIndex {
+		if index, ok := d.(interface{ PrepareAlbumIndex(context.Context) error }); ok {
+			if err := index.PrepareAlbumIndex(ctx); err != nil {
+				return err
+			}
+		}
+	}
+	rangeDir := d.Range
+	if drive, ok := d.(interface {
+		RangeContext(context.Context, string, func(fs.FileInfo) bool) error
+	}); ok {
+		rangeDir = func(dir string, deal func(fs.FileInfo) bool) error {
+			return drive.RangeContext(ctx, dir, deal)
+		}
+	}
+	root, err := listDir(rangeDir, ".")
 	if err != nil {
 		im.logger.Println("Error listing year dir:", err)
 		return err
@@ -694,14 +769,16 @@ func (im *ImgManager) RangeByDate(date time.Time, f func(info ImgInfo) bool) err
 	}
 	sortPending()
 	for len(pending) > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		last := len(pending) - 1
 		current := pending[last]
 		pending = pending[:last]
 		if current.levels > 0 {
-			children, err := im.listDir(d, current.dir)
+			children, err := listDir(rangeDir, current.dir)
 			if err != nil {
-				im.logger.Printf("Error listing date dir %s: %s", current.dir, err)
-				continue
+				return fmt.Errorf("list %s: %w", current.dir, err)
 			}
 			for _, child := range children {
 				number, err := strconv.Atoi(child.Name())
@@ -736,34 +813,41 @@ func (im *ImgManager) RangeByDate(date time.Time, f func(info ImgInfo) bool) err
 		}
 
 		goOn := true
-		d.Range(current.dir, func(info fs.FileInfo) bool {
+		var liveErr error
+		err := rangeDir(current.dir, func(info fs.FileInfo) bool {
 			path := filepath.Join(current.dir, info.Name())
 			if info.IsDir() {
 				if strings.HasPrefix(info.Name(), "live_") {
-					d.Range(path, func(info2 fs.FileInfo) bool {
+					liveErr = rangeDir(path, func(info2 fs.FileInfo) bool {
 						if !util.IsVideo(info2.Name()) {
 							goOn = f(ImgInfo{
-								Path: filepath.Join(path, info2.Name()),
+								Date: current.date, Path: filepath.Join(path, info2.Name()),
 								Size: info2.Size(), IsLivePhoto: true,
 							})
 						}
 						return goOn
 					})
 				}
-				return goOn
+				return goOn && liveErr == nil
 			}
-			goOn = f(ImgInfo{Path: path, Size: info.Size()})
+			goOn = f(ImgInfo{Date: current.date, Path: path, Size: info.Size()})
 			return goOn
 		})
+		if err != nil {
+			return fmt.Errorf("list %s: %w", current.dir, err)
+		}
+		if liveErr != nil {
+			return liveErr
+		}
 		if !goOn {
 			break
 		}
 	}
 	return nil
 }
-func (im *ImgManager) listDir(d StorageDrive, path string) ([]fs.FileInfo, error) {
+func listDir(rangeDir func(string, func(fs.FileInfo) bool) error, path string) ([]fs.FileInfo, error) {
 	infos := make([]fs.FileInfo, 0)
-	err := d.Range(path, func(info fs.FileInfo) bool {
+	err := rangeDir(path, func(info fs.FileInfo) bool {
 		infos = append(infos, info)
 		return true
 	})

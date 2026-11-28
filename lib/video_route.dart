@@ -4,6 +4,7 @@ import 'package:img_syncer/asset.dart';
 import 'package:chewie/chewie.dart';
 import 'package:video_player/video_player.dart';
 import 'package:img_syncer/global.dart';
+import 'package:img_syncer/storage/storage.dart';
 import 'package:img_syncer/design_tokens.dart';
 
 class VideoRoute extends StatefulWidget {
@@ -20,23 +21,31 @@ class VideoRoute extends StatefulWidget {
 }
 
 class _VideoRouteState extends State<VideoRoute> {
-  late VideoPlayerController videoPlayerController;
-  late ChewieController chewieController;
+  VideoPlayerController? videoPlayerController;
+  ChewieController? chewieController;
+  Object? _error;
   bool isInitialized = false;
   String? _tempFilePath;
 
   @override
   void initState() {
     super.initState();
-    initializePlayer();
+    initializePlayer().catchError((Object error) {
+      if (mounted) setState(() => _error = error);
+    });
   }
 
   @override
   void dispose() {
-    chewieController.dispose();
-    videoPlayerController.dispose();
+    chewieController?.dispose();
+    videoPlayerController?.dispose();
     if (_tempFilePath != null) {
-      File(_tempFilePath!).delete().ignore();
+      final file = File(_tempFilePath!);
+      if (widget.filePath == null) {
+        file.parent.delete(recursive: true).ignore();
+      } else {
+        file.delete().ignore();
+      }
     }
     super.dispose();
   }
@@ -44,45 +53,53 @@ class _VideoRouteState extends State<VideoRoute> {
   Future<void> initializePlayer() async {
     bool initialized = false;
     if (widget.filePath != null) {
-      videoPlayerController = VideoPlayerController.file(File(widget.filePath!));
+      videoPlayerController =
+          VideoPlayerController.file(File(widget.filePath!));
       _tempFilePath = widget.filePath;
     } else if (widget.asset!.hasLocal) {
       final file = await widget.asset!.local!.originFile;
+      if (!mounted) return;
       videoPlayerController = VideoPlayerController.file(file!);
     } else if (widget.asset!.hasRemote) {
-      var uri = widget.asset!.remote!.path;
-      if (uri[0] != '/') {
-        uri = "/$uri";
-      }
-      final url = "$httpBaseUrl$uri";
-      videoPlayerController = VideoPlayerController.network(url);
+      await checkServer();
+      if (!mounted) return;
+      videoPlayerController = VideoPlayerController.networkUrl(
+        widget.asset!.remote!.mediaUri(),
+        httpHeaders: remoteMediaHeaders(),
+      );
       try {
-        await videoPlayerController.initialize();
+        await videoPlayerController!.initialize();
         initialized = true;
       } catch (e) {
+        if (!mounted) return;
         // 流式播放失败，回退到完整下载后播放
         final filePath = await widget.asset!.downloadToTmpFilePath();
+        if (!mounted) {
+          await File(filePath).parent.delete(recursive: true);
+          return;
+        }
         _tempFilePath = filePath;
-        videoPlayerController.dispose();
+        await videoPlayerController?.dispose();
+        if (!mounted) return;
         videoPlayerController = VideoPlayerController.file(File(filePath));
-        await videoPlayerController.initialize();
+        await videoPlayerController!.initialize();
         initialized = true;
         SnackBarManager.showSnackBar(l10n.streamFallbackDownload);
       }
     }
     if (!initialized) {
-      await videoPlayerController.initialize();
+      await videoPlayerController!.initialize();
     }
+    if (!mounted) return;
     Widget customControls = const MaterialControls();
     var controlsSafeAreaMinimum = const EdgeInsets.all(0);
     if (Platform.isIOS || Platform.isMacOS) {
       controlsSafeAreaMinimum = const EdgeInsets.fromLTRB(0, 30, 0, 20);
       customControls = const CupertinoControls(
-          backgroundColor: AppColors.videoRouteBg,
-          iconColor: Colors.white);
+          backgroundColor: AppColors.videoRouteBg, iconColor: Colors.white);
     }
     chewieController = ChewieController(
-      videoPlayerController: videoPlayerController,
+      videoPlayerController: videoPlayerController!,
       autoPlay: true,
       looping: false,
       showControlsOnInitialize: false,
@@ -108,9 +125,12 @@ class _VideoRouteState extends State<VideoRoute> {
             Center(
               child: isInitialized
                   ? Chewie(
-                      controller: chewieController,
+                      controller: chewieController!,
                     )
-                  : const CircularProgressIndicator(),
+                  : _error == null
+                      ? const CircularProgressIndicator()
+                      : Text(l10n.downloadFailed,
+                          style: const TextStyle(color: Colors.white)),
             ),
             Positioned(
               top: 0,
