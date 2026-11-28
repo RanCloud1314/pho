@@ -23,7 +23,7 @@ const (
 	HeaderEncryptType     = "Image-Encrypt-Type"
 	HeaderEncryptPassword = "Image-Encrypt-Password"
 	HeaderIsLivePhoto     = "Image-Is-Live-Photo"
-	maxUploadSize         = 500 << 20 // 500MB
+	maxUploadSize         = 8 << 30 // 8 GiB
 	uploadProgressPath    = "/_pho/upload-progress/"
 )
 
